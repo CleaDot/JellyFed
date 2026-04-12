@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <title>JellyFed</title>
+</head>
+<body>
+    <div id="JellyFedConfigPage" data-role="page" class="page type-interior pluginConfigurationPage"
+         data-require="emby-input,emby-button,emby-select,emby-checkbox">
+        <div data-role="content">
+            <div class="content-primary">
+
+                <form id="JellyFedConfigForm">
+
+                    <div class="sectionTitleContainer flex align-items-center">
+                        <h2 class="sectionTitle">JellyFed — Federation Settings</h2>
+                    </div>
+
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="federationToken">
+                            Federation Token (this instance)
+                        </label>
+                        <input id="federationToken" name="FederationToken" type="text"
+                               class="emby-input" placeholder="Share this token with peers" />
+                        <div class="fieldDescription">
+                            Token that peers must present to access your catalog and streams.
+                        </div>
+                    </div>
+
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="syncIntervalHours">
+                            Sync Interval (hours)
+                        </label>
+                        <input id="syncIntervalHours" name="SyncIntervalHours" type="number"
+                               class="emby-input" min="1" max="168" />
+                    </div>
+
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="libraryPath">
+                            Library Path
+                        </label>
+                        <input id="libraryPath" name="LibraryPath" type="text"
+                               class="emby-input" placeholder="/jellyfed-library" />
+                        <div class="fieldDescription">
+                            Local directory where .strm files and metadata will be written.
+                        </div>
+                    </div>
+
+                    <div class="sectionTitleContainer" style="margin-top: 2em;">
+                        <h2 class="sectionTitle">Peers</h2>
+                    </div>
+
+                    <div id="peersContainer">
+                        <!-- Peers rendered by JS -->
+                    </div>
+
+                    <button id="addPeerBtn" type="button" class="emby-button raised">
+                        Add Peer
+                    </button>
+
+                    <div>
+                        <button type="submit" class="emby-button raised button-submit">
+                            Save
+                        </button>
+                    </div>
+
+                </form>
+            </div>
+        </div>
+
+        <script type="text/javascript">
+            const JellyFedConfig = {
+                pluginId: 'ff0164d7-e8c0-44c1-bc61-45017125a155',
+
+                async load() {
+                    const config = await ApiClient.getPluginConfiguration(this.pluginId);
+                    document.querySelector('#federationToken').value = config.FederationToken || '';
+                    document.querySelector('#syncIntervalHours').value = config.SyncIntervalHours || 6;
+                    document.querySelector('#libraryPath').value = config.LibraryPath || '/jellyfed-library';
+                    this.renderPeers(config.Peers || []);
+                },
+
+                renderPeers(peers) {
+                    const container = document.querySelector('#peersContainer');
+                    container.innerHTML = '';
+                    peers.forEach((peer, i) => {
+                        container.insertAdjacentHTML('beforeend', `
+                            <fieldset style="border:1px solid #444;padding:1em;margin-bottom:1em">
+                                <legend>Peer #${i + 1}</legend>
+                                <div class="inputContainer">
+                                    <label>Name</label>
+                                    <input class="emby-input peer-name" value="${peer.Name || ''}" />
+                                </div>
+                                <div class="inputContainer">
+                                    <label>URL</label>
+                                    <input class="emby-input peer-url" value="${peer.Url || ''}" />
+                                </div>
+                                <div class="inputContainer">
+                                    <label>Federation Token</label>
+                                    <input class="emby-input peer-token" type="password" value="${peer.FederationToken || ''}" />
+                                </div>
+                                <label><input type="checkbox" class="peer-enabled" ${peer.Enabled ? 'checked' : ''} /> Enabled</label>
+                                <label><input type="checkbox" class="peer-movies" ${peer.SyncMovies ? 'checked' : ''} /> Sync Movies</label>
+                                <label><input type="checkbox" class="peer-series" ${peer.SyncSeries ? 'checked' : ''} /> Sync Series</label>
+                                <button type="button" class="emby-button" onclick="this.closest('fieldset').remove()">Remove</button>
+                            </fieldset>
+                        `);
+                    });
+                },
+
+                collectPeers() {
+                    return Array.from(document.querySelectorAll('#peersContainer fieldset')).map(fs => ({
+                        Name: fs.querySelector('.peer-name').value,
+                        Url: fs.querySelector('.peer-url').value,
+                        FederationToken: fs.querySelector('.peer-token').value,
+                        Enabled: fs.querySelector('.peer-enabled').checked,
+                        SyncMovies: fs.querySelector('.peer-movies').checked,
+                        SyncSeries: fs.querySelector('.peer-series').checked,
+                    }));
+                },
+
+                async save(e) {
+                    e.preventDefault();
+                    const config = await ApiClient.getPluginConfiguration(this.pluginId);
+                    config.FederationToken = document.querySelector('#federationToken').value;
+                    config.SyncIntervalHours = parseInt(document.querySelector('#syncIntervalHours').value, 10);
+                    config.LibraryPath = document.querySelector('#libraryPath').value;
+                    config.Peers = this.collectPeers();
+                    await ApiClient.updatePluginConfiguration(this.pluginId, config);
+                    Dashboard.processPluginConfigurationUpdateResult();
+                }
+            };
+
+            document.querySelector('#JellyFedConfigPage').addEventListener('pageshow', () => JellyFedConfig.load());
+            document.querySelector('#JellyFedConfigForm').addEventListener('submit', e => JellyFedConfig.save(e));
+            document.querySelector('#addPeerBtn').addEventListener('click', () => {
+                JellyFedConfig.renderPeers([...JellyFedConfig.collectPeers(), {}]);
+            });
+        </script>
+    </div>
+</body>
+</html>
