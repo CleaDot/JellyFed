@@ -25,5 +25,7 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         serviceCollection.AddScoped<PeerClient>();
         serviceCollection.AddScoped<StrmWriter>();
         serviceCollection.AddScoped<FederationSyncTask>();
+
+        serviceCollection.AddHostedService<PeerHeartbeatService>();
     }
 }

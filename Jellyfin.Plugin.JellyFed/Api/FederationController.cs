@@ -5,9 +5,11 @@ using System.Linq;
 using System.Net.Mime;
 using Jellyfin.Data.Enums;
 using Jellyfin.Plugin.JellyFed.Api.Dto;
+using Jellyfin.Plugin.JellyFed.Sync;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Entities;
+using MediaBrowser.Model.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -24,16 +26,22 @@ namespace Jellyfin.Plugin.JellyFed.Api;
 public class FederationController : ControllerBase
 {
     private readonly ILibraryManager _libraryManager;
+    private readonly ITaskManager _taskManager;
     private readonly ILogger<FederationController> _logger;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="FederationController"/> class.
     /// </summary>
     /// <param name="libraryManager">Instance of the <see cref="ILibraryManager"/> interface.</param>
+    /// <param name="taskManager">Instance of the <see cref="ITaskManager"/> interface.</param>
     /// <param name="logger">Instance of the <see cref="ILogger{FederationController}"/> interface.</param>
-    public FederationController(ILibraryManager libraryManager, ILogger<FederationController> logger)
+    public FederationController(
+        ILibraryManager libraryManager,
+        ITaskManager taskManager,
+        ILogger<FederationController> logger)
     {
         _libraryManager = libraryManager;
+        _taskManager = taskManager;
         _logger = logger;
     }
 
@@ -236,6 +244,109 @@ public class FederationController : ControllerBase
                 UpdatedAt = item.DateModified.ToString("O", CultureInfo.InvariantCulture)
             };
         }
+    }
+
+    /// <summary>
+    /// Returns all configured peers with their current online/offline status.
+    /// </summary>
+    /// <returns>Peer list with status.</returns>
+    [HttpGet("peers")]
+    [AllowAnonymous]
+    [ServiceFilter(typeof(FederationAuthFilter))]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    public ActionResult<PeersResponseDto> GetPeers()
+    {
+        var config = Plugin.Instance?.Configuration;
+        if (config is null)
+        {
+            return Ok(new PeersResponseDto());
+        }
+
+        var libraryPath = config.LibraryPath;
+        var states = string.IsNullOrWhiteSpace(libraryPath)
+            ? new System.Collections.Generic.Dictionary<string, PeerStatus>()
+            : PeerStateStore.Load(libraryPath);
+
+        var peers = config.Peers.Select(peer =>
+        {
+            states.TryGetValue(peer.Name, out var status);
+            return new PeerDto
+            {
+                Name = peer.Name,
+                Url = peer.Url,
+                Enabled = peer.Enabled,
+                Online = status?.Online ?? false,
+                LastSeen = status?.LastSeen,
+                Version = status?.Version,
+                MovieCount = status?.MovieCount ?? 0,
+                SeriesCount = status?.SeriesCount ?? 0
+            };
+        }).ToList();
+
+        return Ok(new PeersResponseDto { Peers = peers });
+    }
+
+    /// <summary>
+    /// Registers a federation request from a remote instance.
+    /// Added as a disabled peer for the admin to review and enable.
+    /// </summary>
+    /// <param name="request">The registration request.</param>
+    /// <returns>Status of the registration.</returns>
+    [HttpPost("peer/register")]
+    [AllowAnonymous]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]
+    public ActionResult RegisterPeer([FromBody] RegisterPeerRequestDto request)
+    {
+        if (string.IsNullOrWhiteSpace(request.Name) ||
+            string.IsNullOrWhiteSpace(request.Url) ||
+            string.IsNullOrWhiteSpace(request.FederationToken))
+        {
+            return BadRequest("Name, Url and FederationToken are required.");
+        }
+
+        var config = Plugin.Instance?.Configuration;
+        if (config is null)
+        {
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, "Plugin configuration unavailable.");
+        }
+
+        var exists = config.Peers.Any(p =>
+            string.Equals(p.Url, request.Url, StringComparison.OrdinalIgnoreCase));
+
+        if (!exists)
+        {
+            config.Peers.Add(new Configuration.PeerConfiguration
+            {
+                Name = request.Name,
+                Url = request.Url,
+                FederationToken = request.FederationToken,
+                Enabled = false
+            });
+            Plugin.Instance!.SaveConfiguration();
+            _logger.LogInformation("JellyFed: registration request from {Name} ({Url}) added as disabled.", request.Name, request.Url);
+        }
+
+        return Ok(new { status = "pending", message = "An admin must enable this peer in the JellyFed config page." });
+    }
+
+    /// <summary>
+    /// Queues a federation sync task for all peers (or a named peer).
+    /// </summary>
+    /// <param name="request">Peer name, or null to sync all.</param>
+    /// <returns>Acknowledgement.</returns>
+    [HttpPost("peer/sync")]
+    [AllowAnonymous]
+    [ServiceFilter(typeof(FederationAuthFilter))]
+    [ProducesResponseType(StatusCodes.Status202Accepted)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    public ActionResult TriggerSync([FromBody] SyncPeerRequestDto request)
+    {
+        _taskManager.QueueScheduledTask<FederationSyncTask>();
+        _logger.LogInformation("JellyFed: manual sync queued (peer={PeerName}).", request.PeerName ?? "all");
+        return Accepted(new { status = "queued" });
     }
 
     private static int? TicksToMinutes(long? ticks)
