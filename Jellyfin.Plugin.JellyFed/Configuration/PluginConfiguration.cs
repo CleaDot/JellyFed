@@ -1,4 +1,5 @@
-using System.Collections.ObjectModel;
+using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using MediaBrowser.Model.Plugins;
 
 namespace Jellyfin.Plugin.JellyFed.Configuration;
@@ -20,9 +21,15 @@ public class PluginConfiguration : BasePluginConfiguration
     }
 
     /// <summary>
-    /// Gets the list of federated peers.
+    /// Gets or sets the list of federated peers.
     /// </summary>
-    public Collection<PeerConfiguration> Peers { get; init; }
+    /// <remarks>
+    /// Must have a public setter so that Jellyfin's JSON/XML serializer can populate
+    /// the collection on deserialization. CA2227/CA1002 suppressed intentionally.
+    /// </remarks>
+    [SuppressMessage("Usage", "CA2227:Collection properties should be read only", Justification = "Required for Jellyfin plugin config deserialization.")]
+    [SuppressMessage("Design", "CA1002:Do not expose generic lists", Justification = "Required for Jellyfin plugin config deserialization.")]
+    public List<PeerConfiguration> Peers { get; set; }
 
     /// <summary>
     /// Gets or sets the sync interval in hours.
