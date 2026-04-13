@@ -5,7 +5,10 @@ using System.IO;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Data.Enums;
+using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
+using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.Tasks;
 using Microsoft.Extensions.Logging;
 
@@ -95,6 +98,10 @@ public class FederationSyncTask : IScheduledTask
         var seenMovieKeys = new HashSet<string>(StringComparer.Ordinal);
         var seenSeriesKeys = new HashSet<string>(StringComparer.Ordinal);
 
+        // TMDB IDs déjà présents dans la bibliothèque locale (hors jellyfed-library).
+        // Évite de réécrire en .strm des contenus que cette instance possède déjà.
+        var localTmdbIds = BuildLocalTmdbIds(libraryPath);
+
         var enabledPeers = config.Peers;
         int totalPeers = enabledPeers.Count;
         int peerIndex = 0;
@@ -128,6 +135,21 @@ public class FederationSyncTask : IScheduledTask
                 cancellationToken.ThrowIfCancellationRequested();
 
                 var key = ManifestKey(item.TmdbId, peer.Name, item.JellyfinId);
+
+                // Skip items already owned locally (same TMDB ID in local library).
+                if (!string.IsNullOrEmpty(item.TmdbId) && localTmdbIds.Contains(item.TmdbId))
+                {
+                    if (item.Type == "Movie")
+                    {
+                        skippedMovies++;
+                    }
+                    else
+                    {
+                        skippedSeries++;
+                    }
+
+                    continue;
+                }
 
                 if (item.Type == "Movie" && peer.SyncMovies)
                 {
@@ -184,6 +206,18 @@ public class FederationSyncTask : IScheduledTask
 
             _logger.LogInformation("JellyFed sync: peer {PeerName} — +{AddedMovies} movies, +{AddedSeries} series, skipped {SkipM}/{SkipS}", peer.Name, addedMovies, addedSeries, skippedMovies, skippedSeries);
 
+            // Auto-registration : on s'annonce au peer pour qu'il nous ajoute en retour.
+            var selfUrl = config.SelfUrl;
+            if (!string.IsNullOrWhiteSpace(selfUrl))
+            {
+                await _peerClient.RegisterOnPeerAsync(
+                    peer,
+                    Plugin.Instance!.Name,
+                    selfUrl,
+                    config.FederationToken,
+                    cancellationToken).ConfigureAwait(false);
+            }
+
             peerIndex++;
             progress.Report((double)peerIndex / totalPeers * 90);
         }
@@ -218,6 +252,35 @@ public class FederationSyncTask : IScheduledTask
         {
             entries.Remove(key);
         }
+    }
+
+    private HashSet<string> BuildLocalTmdbIds(string federatedLibraryPath)
+    {
+        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var items = _libraryManager.GetItemList(new InternalItemsQuery
+        {
+            IncludeItemTypes = [BaseItemKind.Movie, BaseItemKind.Series],
+            IsVirtualItem = false,
+            Recursive = true
+        });
+
+        foreach (var item in items)
+        {
+            // Ignorer les items de la bibliothèque fédérée (ce sont des .strm)
+            if (!string.IsNullOrEmpty(item.Path) &&
+                item.Path.StartsWith(federatedLibraryPath, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var tmdbId = item.GetProviderId("Tmdb");
+            if (!string.IsNullOrEmpty(tmdbId))
+            {
+                result.Add(tmdbId);
+            }
+        }
+
+        return result;
     }
 
     private static string ManifestKey(string? tmdbId, string peerName, string jellyfinId)

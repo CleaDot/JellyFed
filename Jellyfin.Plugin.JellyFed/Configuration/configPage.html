@@ -40,9 +40,20 @@
                             Library Path
                         </label>
                         <input id="libraryPath" name="LibraryPath" type="text"
-                               class="emby-input" placeholder="/jellyfed-library" />
+                               class="emby-input" placeholder="/config/jellyfed-library" />
                         <div class="fieldDescription">
                             Local directory where .strm files and metadata will be written.
+                        </div>
+                    </div>
+
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="selfUrl">
+                            Self URL
+                        </label>
+                        <input id="selfUrl" name="SelfUrl" type="text"
+                               class="emby-input" placeholder="http://my-jellyfin:8096" />
+                        <div class="fieldDescription">
+                            URL by which this instance is reachable from peers. Used for automatic bidirectional registration.
                         </div>
                     </div>
 
@@ -69,73 +80,117 @@
         </div>
 
         <script type="text/javascript">
-            const JellyFedConfig = {
-                pluginId: 'ff0164d7-e8c0-44c1-bc61-45017125a155',
+            (function () {
+                var pluginId = 'ff0164d7-e8c0-44c1-bc61-45017125a155';
+                var config = {};
 
-                async load() {
-                    const config = await ApiClient.getPluginConfiguration(this.pluginId);
-                    document.querySelector('#federationToken').value = config.FederationToken || '';
-                    document.querySelector('#syncIntervalHours').value = config.SyncIntervalHours || 6;
-                    document.querySelector('#libraryPath').value = config.LibraryPath || '/jellyfed-library';
-                    this.renderPeers(config.Peers || []);
-                },
-
-                renderPeers(peers) {
-                    const container = document.querySelector('#peersContainer');
+                function renderPeers(page, peers) {
+                    var container = page.querySelector('#peersContainer');
+                    if (!container) { return; }
                     container.innerHTML = '';
-                    peers.forEach((peer, i) => {
-                        container.insertAdjacentHTML('beforeend', `
-                            <fieldset style="border:1px solid #444;padding:1em;margin-bottom:1em">
-                                <legend>Peer #${i + 1}</legend>
-                                <div class="inputContainer">
-                                    <label>Name</label>
-                                    <input class="emby-input peer-name" value="${peer.Name || ''}" />
-                                </div>
-                                <div class="inputContainer">
-                                    <label>URL</label>
-                                    <input class="emby-input peer-url" value="${peer.Url || ''}" />
-                                </div>
-                                <div class="inputContainer">
-                                    <label>Federation Token</label>
-                                    <input class="emby-input peer-token" type="password" value="${peer.FederationToken || ''}" />
-                                </div>
-                                <label><input type="checkbox" class="peer-enabled" ${peer.Enabled ? 'checked' : ''} /> Enabled</label>
-                                <label><input type="checkbox" class="peer-movies" ${peer.SyncMovies ? 'checked' : ''} /> Sync Movies</label>
-                                <label><input type="checkbox" class="peer-series" ${peer.SyncSeries ? 'checked' : ''} /> Sync Series</label>
-                                <button type="button" class="emby-button" onclick="this.closest('fieldset').remove()">Remove</button>
-                            </fieldset>
-                        `);
+                    peers.forEach(function (peer, i) {
+                        var fs = document.createElement('fieldset');
+                        fs.style.cssText = 'border:1px solid #444;padding:1em;margin-bottom:1em';
+                        fs.innerHTML = '<legend>Peer #' + (i + 1) + '</legend>'
+                            + '<div class="inputContainer"><label>Name</label><input class="emby-input peer-name" /></div>'
+                            + '<div class="inputContainer"><label>URL</label><input class="emby-input peer-url" /></div>'
+                            + '<div class="inputContainer"><label>Federation Token</label><input class="emby-input peer-token" type="password" /></div>'
+                            + '<label><input type="checkbox" class="peer-enabled" /> Enabled</label> '
+                            + '<label><input type="checkbox" class="peer-movies" /> Sync Movies</label> '
+                            + '<label><input type="checkbox" class="peer-series" /> Sync Series</label> '
+                            + '<button type="button" class="emby-button raised button-cancel remove-peer"><span>Remove</span></button>';
+                        // Support les deux casses (PascalCase XmlSerializer / camelCase STJ)
+                        fs.querySelector('.peer-name').value = peer.Name || peer.name || '';
+                        fs.querySelector('.peer-url').value = peer.Url || peer.url || '';
+                        fs.querySelector('.peer-token').value = peer.FederationToken || peer.federationToken || '';
+                        fs.querySelector('.peer-enabled').checked = !!(peer.Enabled || peer.enabled);
+                        fs.querySelector('.peer-movies').checked = !!(peer.SyncMovies || peer.syncMovies);
+                        fs.querySelector('.peer-series').checked = !!(peer.SyncSeries || peer.syncSeries);
+                        fs.querySelector('.remove-peer').addEventListener('click', function () {
+                            var url = fs.querySelector('.peer-url').value;
+                            if (url) {
+                                // Marquer l'URL pour blacklist avant de supprimer le fieldset
+                                var marker = document.createElement('span');
+                                marker.setAttribute('data-blocked-url', url);
+                                marker.style.display = 'none';
+                                page.querySelector('#peersContainer').appendChild(marker);
+                            }
+                            fs.remove();
+                        });
+                        container.appendChild(fs);
                     });
-                },
-
-                collectPeers() {
-                    return Array.from(document.querySelectorAll('#peersContainer fieldset')).map(fs => ({
-                        Name: fs.querySelector('.peer-name').value,
-                        Url: fs.querySelector('.peer-url').value,
-                        FederationToken: fs.querySelector('.peer-token').value,
-                        Enabled: fs.querySelector('.peer-enabled').checked,
-                        SyncMovies: fs.querySelector('.peer-movies').checked,
-                        SyncSeries: fs.querySelector('.peer-series').checked,
-                    }));
-                },
-
-                async save(e) {
-                    e.preventDefault();
-                    const config = await ApiClient.getPluginConfiguration(this.pluginId);
-                    config.FederationToken = document.querySelector('#federationToken').value;
-                    config.SyncIntervalHours = parseInt(document.querySelector('#syncIntervalHours').value, 10);
-                    config.LibraryPath = document.querySelector('#libraryPath').value;
-                    config.Peers = this.collectPeers();
-                    await ApiClient.updatePluginConfiguration(this.pluginId, config);
-                    Dashboard.processPluginConfigurationUpdateResult();
                 }
-            };
 
-            document.querySelector('#JellyFedConfigPage').addEventListener('pageshow', () => JellyFedConfig.load());
-            document.querySelector('#JellyFedConfigForm').addEventListener('submit', e => JellyFedConfig.save(e));
-            document.querySelector('#addPeerBtn').addEventListener('click', () => {
-                JellyFedConfig.renderPeers([...JellyFedConfig.collectPeers(), {}]);
-            });
+                function collectPeers(page) {
+                    return Array.from(page.querySelectorAll('#peersContainer fieldset')).map(function (fs) {
+                        return {
+                            Name: fs.querySelector('.peer-name').value,
+                            Url: fs.querySelector('.peer-url').value,
+                            FederationToken: fs.querySelector('.peer-token').value,
+                            Enabled: fs.querySelector('.peer-enabled').checked,
+                            SyncMovies: fs.querySelector('.peer-movies').checked,
+                            SyncSeries: fs.querySelector('.peer-series').checked
+                        };
+                    });
+                }
+
+                function collectBlockedUrls(page) {
+                    // URLs marquées pour blocage (peers supprimés via le bouton Remove)
+                    return Array.from(page.querySelectorAll('#peersContainer [data-blocked-url]'))
+                        .map(function (el) { return el.getAttribute('data-blocked-url'); });
+                }
+
+                function loadConfig(page) {
+                    ApiClient.getPluginConfiguration(pluginId).then(function (loaded) {
+                        config = loaded;
+                        // Support PascalCase (XmlSerializer) et camelCase (System.Text.Json)
+                        page.querySelector('#federationToken').value = loaded.FederationToken || loaded.federationToken || '';
+                        page.querySelector('#syncIntervalHours').value = loaded.SyncIntervalHours || loaded.syncIntervalHours || 6;
+                        page.querySelector('#libraryPath').value = loaded.LibraryPath || loaded.libraryPath || '/config/jellyfed-library';
+                        page.querySelector('#selfUrl').value = loaded.SelfUrl || loaded.selfUrl || '';
+                        var peers = loaded.Peers || loaded.peers || [];
+                        renderPeers(page, peers);
+                    });
+                }
+
+                function saveConfig(page, e) {
+                    e.preventDefault();
+                    Dashboard.showLoadingMsg();
+                    var currentBlocked = (config && (config.BlockedPeerUrls || config.blockedPeerUrls)) || [];
+                    var newBlocked = collectBlockedUrls(page);
+                    var allBlocked = currentBlocked.concat(newBlocked).filter(function (u, i, a) {
+                        return u && a.indexOf(u) === i;
+                    });
+                    var payload = {
+                        FederationToken: page.querySelector('#federationToken').value,
+                        SyncIntervalHours: parseInt(page.querySelector('#syncIntervalHours').value, 10) || 6,
+                        LibraryPath: page.querySelector('#libraryPath').value,
+                        SelfUrl: page.querySelector('#selfUrl').value,
+                        Peers: collectPeers(page),
+                        BlockedPeerUrls: allBlocked
+                    };
+                    ApiClient.updatePluginConfiguration(pluginId, payload).then(function () {
+                        Dashboard.processPluginConfigurationUpdateResult();
+                    });
+                }
+
+                var page = document.querySelector('#JellyFedConfigPage');
+
+                // pageshow : refresh navigateur / retour arrière navigateur
+                page.addEventListener('pageshow', function () { loadConfig(page); });
+                // viewshow : event SPA Jellyfin (navigation interne)
+                page.addEventListener('viewshow', function () { loadConfig(page); });
+                // Appel direct différé : filet de sécurité si aucun event ne se déclenche
+                setTimeout(function () { loadConfig(page); }, 0);
+
+                page.querySelector('#JellyFedConfigForm').addEventListener('submit', function (e) {
+                    saveConfig(page, e);
+                });
+
+                page.querySelector('#addPeerBtn').addEventListener('click', function () {
+                    renderPeers(page, collectPeers(page).concat([{}]));
+                });
+            })();
         </script>
     </div>
 </body>

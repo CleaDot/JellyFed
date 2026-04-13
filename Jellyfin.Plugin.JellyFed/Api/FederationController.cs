@@ -313,6 +313,16 @@ public class FederationController : ControllerBase
             return StatusCode(StatusCodes.Status503ServiceUnavailable, "Plugin configuration unavailable.");
         }
 
+        // Refus si le peer a été manuellement supprimé (blacklist)
+        var isBlocked = config.BlockedPeerUrls.Any(u =>
+            string.Equals(u, request.Url, StringComparison.OrdinalIgnoreCase));
+
+        if (isBlocked)
+        {
+            _logger.LogInformation("JellyFed: registration from {Name} ({Url}) refused — peer is blocked.", request.Name, request.Url);
+            return Ok(new { status = "blocked", message = "This peer has been removed by an admin." });
+        }
+
         var exists = config.Peers.Any(p =>
             string.Equals(p.Url, request.Url, StringComparison.OrdinalIgnoreCase));
 
@@ -323,13 +333,15 @@ public class FederationController : ControllerBase
                 Name = request.Name,
                 Url = request.Url,
                 FederationToken = request.FederationToken,
-                Enabled = false
+                Enabled = true,
+                SyncMovies = true,
+                SyncSeries = true
             });
             Plugin.Instance!.SaveConfiguration();
-            _logger.LogInformation("JellyFed: registration request from {Name} ({Url}) added as disabled.", request.Name, request.Url);
+            _logger.LogInformation("JellyFed: auto-registered peer {Name} ({Url}).", request.Name, request.Url);
         }
 
-        return Ok(new { status = "pending", message = "An admin must enable this peer in the JellyFed config page." });
+        return Ok(new { status = "ok", message = "Peer registered." });
     }
 
     /// <summary>

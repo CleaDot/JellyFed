@@ -15,9 +15,11 @@ public class PluginConfiguration : BasePluginConfiguration
     public PluginConfiguration()
     {
         Peers = [];
+        BlockedPeerUrls = [];
         SyncIntervalHours = 6;
-        LibraryPath = "/jellyfed-library";
+        LibraryPath = "/config/jellyfed-library";
         FederationToken = string.Empty;
+        SelfUrl = string.Empty;
     }
 
     /// <summary>
@@ -45,4 +47,16 @@ public class PluginConfiguration : BasePluginConfiguration
     /// Gets or sets the federation token exposed by this instance to peers.
     /// </summary>
     public string FederationToken { get; set; }
+
+    /// <summary>
+    /// Gets or sets URLs of peers that were manually removed and must not be auto-registered again.
+    /// </summary>
+    [SuppressMessage("Usage", "CA2227:Collection properties should be read only", Justification = "Required for Jellyfin plugin config deserialization.")]
+    [SuppressMessage("Design", "CA1002:Do not expose generic lists", Justification = "Required for Jellyfin plugin config deserialization.")]
+    public List<string> BlockedPeerUrls { get; set; }
+
+    /// <summary>
+    /// Gets or sets the URL by which this instance is reachable from peers (used for auto-registration).
+    /// </summary>
+    public string SelfUrl { get; set; }
 }

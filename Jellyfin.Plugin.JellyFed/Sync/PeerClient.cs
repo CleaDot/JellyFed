@@ -124,6 +124,42 @@ public class PeerClient
         }
     }
 
+    /// <summary>
+    /// Announces this instance to a peer so it can register us as a peer in return.
+    /// </summary>
+    /// <param name="peer">The peer to notify.</param>
+    /// <param name="selfName">Friendly name of this instance.</param>
+    /// <param name="selfUrl">URL of this instance reachable by the peer.</param>
+    /// <param name="selfToken">Federation token of this instance.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A <see cref="Task"/> representing the asynchronous operation.</returns>
+    public async Task RegisterOnPeerAsync(
+        PeerConfiguration peer,
+        string selfName,
+        string selfUrl,
+        string selfToken,
+        CancellationToken cancellationToken)
+    {
+        var url = BuildUrl(peer, "/JellyFed/peer/register");
+        try
+        {
+            var payload = new Api.Dto.RegisterPeerRequestDto
+            {
+                Name = selfName,
+                Url = selfUrl,
+                FederationToken = selfToken
+            };
+            using var request = new HttpRequestMessage(HttpMethod.Post, url);
+            request.Content = System.Net.Http.Json.JsonContent.Create(payload);
+            using var response = await _http.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            _logger.LogInformation("JellyFed: registered on peer {PeerName} — HTTP {Status}", peer.Name, (int)response.StatusCode);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "JellyFed: could not register on peer {PeerName} (non-fatal)", peer.Name);
+        }
+    }
+
     private static string BuildUrl(PeerConfiguration peer, string path)
     {
         var baseUrl = peer.Url.TrimEnd('/');
