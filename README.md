@@ -26,6 +26,7 @@ Instance A installe JellyFed. Elle se connecte à l'Instance B (un ami, un serve
 
 ### Fédération de catalogue
 - Exposition du catalogue local via `GET /JellyFed/catalog` (films + séries)
+- Les items `.strm` de la jellyfed-library sont exclus du catalogue exposé (évite la propagation en chaîne)
 - Exposition des saisons/épisodes via `GET /JellyFed/catalog/series/:id/seasons`
 - Authentification par token de fédération (`Authorization: Bearer <token>`)
 - Delta sync : paramètre `?since=` pour ne synchroniser que les nouveautés
@@ -48,6 +49,7 @@ Instance A installe JellyFed. Elle se connecte à l'Instance B (un ami, un serve
 ### Gestion des peers
 - Configuration via le panneau admin Jellyfin (page config custom)
 - Par peer : Nom, URL, Token de fédération, Enabled, SyncMovies, SyncSeries
+- Champ **Instance Name** : nom utilisé lors de l'auto-registration (affiché chez les peers)
 - Endpoint `GET /JellyFed/peers` : liste les peers avec statut online/offline
 - Endpoint `POST /JellyFed/peer/sync` : sync manuelle
 - Service heartbeat (`PeerHeartbeatService`) toutes les 5 minutes → statut online/offline
@@ -56,12 +58,24 @@ Instance A installe JellyFed. Elle se connecte à l'Instance B (un ami, un serve
 ### Auto-registration bidirectionnelle
 - Après chaque sync, l'instance s'annonce au peer via `POST /JellyFed/peer/register`
 - Le peer ajoute l'instance comme peer en retour (activé et prêt à syncer)
-- La `SelfUrl` de l'instance doit être configurée pour que cela fonctionne
+- La `SelfUrl` et le `SelfName` de l'instance doivent être configurés
+
+### Tokens d'accès par peer
+- Lors de l'auto-registration, chaque peer reçoit un token unique généré par l'instance cible
+- Ce token remplace le token global dans la config du peer enregistrant
+- La révocation est immédiate : supprimer un peer invalide son token → 401 sur le catalog
+- Fallback token global pour les peers configurés manuellement sans auto-registration
 
 ### Blacklist peers
 - Les peers supprimés manuellement sont ajoutés à `BlockedPeerUrls`
 - Un peer blacklisté ne peut pas se re-enregistrer via `POST /JellyFed/peer/register`
 - Réponse `{"status": "blocked"}` renvoyée au peer refusé
+
+### Page de configuration (UI admin)
+- **Blocked Peers** : liste des URLs bloquées avec bouton "Unblock"
+- **Sync Now** : bouton global + bouton par peer avec feedback visuel
+- **Synced Catalogue** : stats par peer (nb films, séries) avec bouton "Purge Catalog"
+- Le bouton "Remove" purge automatiquement les `.strm` du peer et retire les items de la bibliothèque Jellyfin
 
 ---
 
@@ -77,6 +91,7 @@ Instance A installe JellyFed. Elle se connecte à l'Instance B (un ami, un serve
 
 ```
 Federation Token : <token aléatoire>
+Instance Name    : mon-serveur
 Sync Interval    : 6 (heures)
 Library Path     : /config/jellyfed-library
 Self URL         : http://mon-jellyfin:8096

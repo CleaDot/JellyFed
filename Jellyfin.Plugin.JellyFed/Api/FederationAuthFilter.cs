@@ -1,3 +1,4 @@
+using System.Linq;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
 
@@ -33,10 +34,23 @@ public sealed class FederationAuthFilter : ActionFilterAttribute
 
         var token = authHeader["Bearer ".Length..].Trim();
 
+        // Primary check: per-peer access tokens (revocable when peer is removed).
+        // A peer that completed auto-registration uses the token issued specifically to it.
+        var validPerPeer = config.Peers.Any(p =>
+            p.Enabled &&
+            !string.IsNullOrEmpty(p.AccessToken) &&
+            string.Equals(token, p.AccessToken, System.StringComparison.Ordinal));
+
+        if (validPerPeer)
+        {
+            return;
+        }
+
+        // Fallback: global federation token, for peers that haven't completed
+        // auto-registration yet (manual setup or first contact).
         if (!string.Equals(token, config.FederationToken, System.StringComparison.Ordinal))
         {
             context.Result = new UnauthorizedObjectResult("Invalid federation token.");
-            return;
         }
     }
 }

@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Net.Mime;
+using System.Text.Json;
 using Jellyfin.Data.Enums;
 using Jellyfin.Plugin.JellyFed.Api.Dto;
 using Jellyfin.Plugin.JellyFed.Sync;
@@ -25,6 +27,11 @@ namespace Jellyfin.Plugin.JellyFed.Api;
 [Produces(MediaTypeNames.Application.Json)]
 public class FederationController : ControllerBase
 {
+    private static readonly JsonSerializerOptions ManifestJsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+    };
+
     private readonly ILibraryManager _libraryManager;
     private readonly ITaskManager _taskManager;
     private readonly ILogger<FederationController> _logger;
@@ -211,8 +218,21 @@ public class FederationController : ControllerBase
 
         var items = _libraryManager.GetItemList(query);
 
+        // Exclude items that live inside our own jellyfed-library (.strm files synced from peers).
+        // Without this filter, federated items would be re-exposed to other peers, causing
+        // their titles (already containing the year from the folder name) to compound on each
+        // sync hop: "Title (2025)" → "Title (2025) (2025)" → "Title (2025) (2025) (2025)".
+        var libPath = Plugin.Instance?.Configuration.LibraryPath;
+
         foreach (var item in items)
         {
+            if (!string.IsNullOrEmpty(libPath) &&
+                !string.IsNullOrEmpty(item.Path) &&
+                item.Path.StartsWith(libPath, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
             if (since.HasValue && item.DateModified <= since.Value)
             {
                 continue;
@@ -320,14 +340,18 @@ public class FederationController : ControllerBase
         if (isBlocked)
         {
             _logger.LogInformation("JellyFed: registration from {Name} ({Url}) refused — peer is blocked.", request.Name, request.Url);
-            return Ok(new { status = "blocked", message = "This peer has been removed by an admin." });
+            return Ok(new RegisterPeerResponseDto { Status = "blocked", Message = "This peer has been removed by an admin." });
         }
 
-        var exists = config.Peers.Any(p =>
+        var existing = config.Peers.FirstOrDefault(p =>
             string.Equals(p.Url, request.Url, StringComparison.OrdinalIgnoreCase));
 
-        if (!exists)
+        string accessToken;
+
+        if (existing is null)
         {
+            // New peer: create entry with a fresh per-peer access token.
+            accessToken = GenerateAccessToken();
             config.Peers.Add(new Configuration.PeerConfiguration
             {
                 Name = request.Name,
@@ -335,13 +359,32 @@ public class FederationController : ControllerBase
                 FederationToken = request.FederationToken,
                 Enabled = true,
                 SyncMovies = true,
-                SyncSeries = true
+                SyncSeries = true,
+                AccessToken = accessToken
             });
-            Plugin.Instance!.SaveConfiguration();
             _logger.LogInformation("JellyFed: auto-registered peer {Name} ({Url}).", request.Name, request.Url);
         }
+        else
+        {
+            // Existing peer: issue a token if not already done, reuse otherwise.
+            // Regenerating on every re-registration would invalidate in-flight requests.
+            if (string.IsNullOrEmpty(existing.AccessToken))
+            {
+                existing.AccessToken = GenerateAccessToken();
+                _logger.LogInformation("JellyFed: issued access token for existing peer {Name} ({Url}).", request.Name, request.Url);
+            }
 
-        return Ok(new { status = "ok", message = "Peer registered." });
+            accessToken = existing.AccessToken;
+        }
+
+        Plugin.Instance!.SaveConfiguration();
+
+        return Ok(new RegisterPeerResponseDto
+        {
+            Status = "ok",
+            Message = "Peer registered.",
+            AccessToken = accessToken
+        });
     }
 
     /// <summary>
@@ -361,9 +404,211 @@ public class FederationController : ControllerBase
         return Accepted(new { status = "queued" });
     }
 
+    /// <summary>
+    /// Returns manifest stats (synced item counts) grouped by peer.
+    /// </summary>
+    /// <returns>Per-peer movie and series counts from the manifest.</returns>
+    [HttpGet("manifest/stats")]
+    [AllowAnonymous]
+    [ServiceFilter(typeof(FederationAuthFilter))]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    public ActionResult<ManifestStatsDto> GetManifestStats()
+    {
+        var config = Plugin.Instance?.Configuration;
+        if (config is null || string.IsNullOrWhiteSpace(config.LibraryPath))
+        {
+            return Ok(new ManifestStatsDto());
+        }
+
+        var manifest = ReadManifest(config.LibraryPath);
+
+        var stats = new Dictionary<string, PeerCatalogStatsDto>(StringComparer.Ordinal);
+
+        foreach (var entry in manifest.Movies.Values)
+        {
+            if (!stats.TryGetValue(entry.PeerName, out var s))
+            {
+                s = new PeerCatalogStatsDto { Name = entry.PeerName };
+                stats[entry.PeerName] = s;
+            }
+
+            s.MovieCount++;
+        }
+
+        foreach (var entry in manifest.Series.Values)
+        {
+            if (!stats.TryGetValue(entry.PeerName, out var s))
+            {
+                s = new PeerCatalogStatsDto { Name = entry.PeerName };
+                stats[entry.PeerName] = s;
+            }
+
+            s.SeriesCount++;
+        }
+
+        return Ok(new ManifestStatsDto { Peers = [.. stats.Values.OrderBy(p => p.Name)] });
+    }
+
+    /// <summary>
+    /// Purges all synced .strm files for a given peer from the manifest and filesystem.
+    /// </summary>
+    /// <param name="request">The peer name to purge.</param>
+    /// <returns>Number of deleted movies and series.</returns>
+    [HttpPost("peer/purge")]
+    [AllowAnonymous]
+    [ServiceFilter(typeof(FederationAuthFilter))]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    public ActionResult PurgePeerCatalog([FromBody] PurgePeerCatalogRequestDto request)
+    {
+        if (string.IsNullOrWhiteSpace(request.PeerName))
+        {
+            return BadRequest("PeerName is required.");
+        }
+
+        var config = Plugin.Instance?.Configuration;
+        if (config is null || string.IsNullOrWhiteSpace(config.LibraryPath))
+        {
+            return BadRequest("LibraryPath is not configured.");
+        }
+
+        var manifest = ReadManifest(config.LibraryPath);
+        var name = request.PeerName;
+
+        var movieKeys = manifest.Movies
+            .Where(kv => string.Equals(kv.Value.PeerName, name, StringComparison.OrdinalIgnoreCase))
+            .Select(kv => kv.Key)
+            .ToList();
+
+        var seriesKeys = manifest.Series
+            .Where(kv => string.Equals(kv.Value.PeerName, name, StringComparison.OrdinalIgnoreCase))
+            .Select(kv => kv.Key)
+            .ToList();
+
+        // Collect folder paths before removing from manifest.
+        var deletedPaths = movieKeys.Select(k => manifest.Movies[k].Path)
+            .Concat(seriesKeys.Select(k => manifest.Series[k].Path))
+            .ToList();
+
+        foreach (var key in movieKeys)
+        {
+            var path = manifest.Movies[key].Path;
+            if (Directory.Exists(path))
+            {
+                Directory.Delete(path, true);
+            }
+
+            manifest.Movies.Remove(key);
+        }
+
+        foreach (var key in seriesKeys)
+        {
+            var path = manifest.Series[key].Path;
+            if (Directory.Exists(path))
+            {
+                Directory.Delete(path, true);
+            }
+
+            manifest.Series.Remove(key);
+        }
+
+        WriteManifest(config.LibraryPath, manifest);
+
+        // Remove items from Jellyfin's library index so they disappear immediately
+        // without waiting for a scheduled scan.
+        RemoveLibraryItems(deletedPaths);
+
+        _logger.LogInformation(
+            "JellyFed: purged catalog for peer {PeerName} — {MovieCount} movies, {SeriesCount} series deleted.",
+            name,
+            movieKeys.Count,
+            seriesKeys.Count);
+
+        return Ok(new { status = "ok", deletedMovies = movieKeys.Count, deletedSeries = seriesKeys.Count });
+    }
+
+    /// <summary>
+    /// Finds and removes all Jellyfin library items whose path starts with one of
+    /// the given folder paths. Files have already been deleted from disk; we pass
+    /// <c>DeleteFileLocation = false</c> so Jellyfin only removes the DB record.
+    /// Series are deleted top-level; Jellyfin cascades to seasons and episodes.
+    /// </summary>
+    private void RemoveLibraryItems(List<string> folderPaths)
+    {
+        if (folderPaths.Count == 0)
+        {
+            return;
+        }
+
+        var deleteOptions = new DeleteOptions { DeleteFileLocation = false };
+
+        // Query only top-level media types — deleting a Series cascades to seasons/episodes.
+        var items = _libraryManager.GetItemList(new InternalItemsQuery
+        {
+            IncludeItemTypes = [BaseItemKind.Movie, BaseItemKind.Series],
+            Recursive = true,
+            IsVirtualItem = false
+        });
+
+        foreach (var item in items)
+        {
+            if (string.IsNullOrEmpty(item.Path))
+            {
+                continue;
+            }
+
+            var underDeletedFolder = folderPaths.Any(p =>
+                item.Path.StartsWith(p, StringComparison.OrdinalIgnoreCase));
+
+            if (!underDeletedFolder)
+            {
+                continue;
+            }
+
+            try
+            {
+                _libraryManager.DeleteItem(item, deleteOptions);
+                _logger.LogInformation("JellyFed: removed library item '{Name}' ({Path})", item.Name, item.Path);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "JellyFed: failed to remove library item '{Name}' ({Path})", item.Name, item.Path);
+            }
+        }
+    }
+
     private static int? TicksToMinutes(long? ticks)
         => ticks.HasValue ? (int)(ticks.Value / TimeSpan.TicksPerMinute) : null;
 
     private static bool HasImage(BaseItem item, ImageType imageType)
         => item.HasImage(imageType, 0);
+
+    private static string GenerateAccessToken() => Guid.NewGuid().ToString("N");
+
+    private static Manifest ReadManifest(string libraryPath)
+    {
+        var path = Path.Combine(libraryPath, ".jellyfed-manifest.json");
+        if (!System.IO.File.Exists(path))
+        {
+            return new Manifest();
+        }
+
+        try
+        {
+            var json = System.IO.File.ReadAllText(path);
+            return JsonSerializer.Deserialize<Manifest>(json, ManifestJsonOptions) ?? new Manifest();
+        }
+        catch
+        {
+            return new Manifest();
+        }
+    }
+
+    private static void WriteManifest(string libraryPath, Manifest manifest)
+    {
+        var path = Path.Combine(libraryPath, ".jellyfed-manifest.json");
+        System.IO.File.WriteAllText(path, JsonSerializer.Serialize(manifest, ManifestJsonOptions));
+    }
 }

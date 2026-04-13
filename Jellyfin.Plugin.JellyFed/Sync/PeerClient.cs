@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -126,6 +127,9 @@ public class PeerClient
 
     /// <summary>
     /// Announces this instance to a peer so it can register us as a peer in return.
+    /// If the peer responds with a per-peer <c>accessToken</c>, that token replaces the
+    /// peer's global <c>FederationToken</c> in the local config so that future API calls
+    /// use the revocable per-peer credential instead of the shared global token.
     /// </summary>
     /// <param name="peer">The peer to notify.</param>
     /// <param name="selfName">Friendly name of this instance.</param>
@@ -153,6 +157,44 @@ public class PeerClient
             request.Content = System.Net.Http.Json.JsonContent.Create(payload);
             using var response = await _http.SendAsync(request, cancellationToken).ConfigureAwait(false);
             _logger.LogInformation("JellyFed: registered on peer {PeerName} — HTTP {Status}", peer.Name, (int)response.StatusCode);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                return;
+            }
+
+            // If the peer issued a per-peer access token, store it as our FederationToken
+            // for that peer. From now on this token (not the global one) is used for all
+            // API calls to that peer, and can be revoked by the peer on their end.
+            var result = await response.Content
+                .ReadFromJsonAsync<Api.Dto.RegisterPeerResponseDto>(cancellationToken)
+                .ConfigureAwait(false);
+
+            if (result is null ||
+                string.IsNullOrEmpty(result.AccessToken) ||
+                !string.Equals(result.Status, "ok", StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            var config = Plugin.Instance?.Configuration;
+            if (config is null)
+            {
+                return;
+            }
+
+            var localPeer = config.Peers.FirstOrDefault(p =>
+                string.Equals(p.Url, peer.Url, StringComparison.OrdinalIgnoreCase));
+
+            if (localPeer is not null &&
+                !string.Equals(localPeer.FederationToken, result.AccessToken, StringComparison.Ordinal))
+            {
+                localPeer.FederationToken = result.AccessToken;
+                Plugin.Instance!.SaveConfiguration();
+                _logger.LogInformation(
+                    "JellyFed: stored per-peer access token from {PeerName} — future API calls use revocable token.",
+                    peer.Name);
+            }
         }
         catch (Exception ex)
         {

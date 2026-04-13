@@ -39,7 +39,7 @@ Appelé automatiquement après chaque sync (auto-registration bidirectionnelle).
 ```
 
 **Réponses :**
-- `200 {"status": "ok", "message": "Peer registered."}` — pair enregistré (ou déjà présent)
+- `200 {"status": "ok", "message": "Peer registered.", "accessToken": "xyz..."}` — pair enregistré. `accessToken` est le token unique émis par cette instance pour le peer enregistrant. Le peer doit le stocker et l'utiliser comme Bearer pour tous ses appels futurs vers cette instance.
 - `200 {"status": "blocked", "message": "..."}` — URL dans la blacklist
 - `400` — champs manquants (Name, Url ou FederationToken vide)
 - `503` — configuration du plugin indisponible

@@ -162,14 +162,44 @@ Le `peerName` dans le manifest permet d'identifier quels items viennent de quel 
 
 ## Authentification inter-instances
 
+### Token global (bootstrap)
+
 ```
 [Instance A]  →  GET /JellyFed/catalog  →  [Instance B]
                  Authorization: Bearer <token-instance-b>
 ```
 
-Le `FederationAuthFilter` (ServiceFilter) vérifie que le token Bearer correspond à `Plugin.Instance.Configuration.FederationToken`. Token incorrect → 401.
+À la configuration initiale (peer ajouté manuellement), A présente le token global de B. Le `FederationAuthFilter` vérifie que le Bearer correspond au `FederationToken` global de l'instance.
 
-L'endpoint `POST /JellyFed/peer/register` est ouvert (pas de token requis) car c'est lui qui permet à un nouveau peer de s'annoncer.
+### Tokens d'accès par peer (après auto-registration)
+
+Lors de la première sync, A s'annonce à B via `POST /JellyFed/peer/register`. B génère un token unique pour A (`AccessToken`) et le retourne dans la réponse. A stocke ce token comme nouveau `FederationToken` pour B dans sa config locale.
+
+```
+1. A POST /JellyFed/peer/register sur B
+   → B génère AccessToken("xyz") pour A
+   → B stocke: Peers[A].AccessToken = "xyz"
+   → B retourne: { accessToken: "xyz" }
+   → A met à jour: Peers[B].FederationToken = "xyz"
+
+2. A GET /JellyFed/catalog sur B
+   Authorization: Bearer xyz
+   → B vérifie: peer A a AccessToken == "xyz" → OK
+
+3. A supprime B
+   → B's peer record (AccessToken "xyz") supprimé de A
+   → A essaie d'accéder B: Bearer xyz
+   → B: aucun peer n'a cet AccessToken → 401
+```
+
+**`FederationAuthFilter` — logique de vérification :**
+1. Vérifier si le Bearer token correspond à l'`AccessToken` d'un peer activé → OK (per-peer)
+2. Sinon, vérifier si le Bearer token correspond au `FederationToken` global → OK (fallback)
+3. Sinon → 401
+
+**Révocation :** supprimer un peer de la config invalide immédiatement son `AccessToken`. Le peer ne peut plus accéder au catalog. Le token global reste valide uniquement pour les peers sans `AccessToken` (non encore passés par l'auto-registration).
+
+L'endpoint `POST /JellyFed/peer/register` est ouvert (pas de token requis) car c'est lui qui permet à un nouveau peer de s'annoncer et d'initier l'échange de tokens.
 
 ---
 
@@ -211,6 +241,7 @@ Si un item du catalogue distant a le même TMDB ID qu'un item local → skip. Ce
   <FederationToken>token-instance-a</FederationToken>
   <SyncIntervalHours>6</SyncIntervalHours>
   <LibraryPath>/config/jellyfed-library</LibraryPath>
+  <SelfName>instance-a</SelfName>
   <SelfUrl>http://jellyfed-test-a:8096</SelfUrl>
   <Peers>
     <PeerConfiguration>

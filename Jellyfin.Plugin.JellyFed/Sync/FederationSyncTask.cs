@@ -210,9 +210,13 @@ public class FederationSyncTask : IScheduledTask
             var selfUrl = config.SelfUrl;
             if (!string.IsNullOrWhiteSpace(selfUrl))
             {
+                var selfName = string.IsNullOrWhiteSpace(config.SelfName)
+                    ? Plugin.Instance!.Name
+                    : config.SelfName;
+
                 await _peerClient.RegisterOnPeerAsync(
                     peer,
-                    Plugin.Instance!.Name,
+                    selfName,
                     selfUrl,
                     config.FederationToken,
                     cancellationToken).ConfigureAwait(false);

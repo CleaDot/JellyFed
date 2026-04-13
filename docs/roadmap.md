@@ -10,41 +10,65 @@
 | 3 — Gestion peers (base) | ✅ |
 | 3b — Auto-registration bidirectionnelle | ✅ |
 | 3c — Blacklist peers | ✅ |
+| 3d — UI : Blocked Peers, Sync Now, Catalogue stats | ✅ |
+| 3e — Tokens d'accès par peer (révocation à la suppression) | ✅ |
+| 3f — Exclusion des .strm du catalogue exposé | ✅ |
+| 3g — SelfName configurable | ✅ |
 | 4 — Multi-source / IMediaSourceProvider | 🔜 |
 | 5 — Gossip protocol | 🔜 |
 | 6 — Distribution publique | 🔜 |
 
 ---
 
-## Bugs connus
+## Tests à valider — suppression de peer
+
+### TEST-01 — Fichiers distants supprimés chez les peers
+**Contexte :** Quand A supprime le peer B, les `.strm` de B doivent disparaître de la bibliothèque de A.
+**À vérifier :**
+- Cliquer "Remove" sur le peer B depuis l'interface de A
+- Vérifier que `{LibraryPath}/Films/` et `{LibraryPath}/Series/` sont vidés des items de B
+- Vérifier que les items disparaissent de l'interface Jellyfin de A (sans rescan manuel)
+- Vérifier que le manifest `.jellyfed-manifest.json` ne contient plus d'entrées pour B
+
+### TEST-02 — Accès au catalogue révoqué
+**Contexte :** Après suppression, B ne doit plus pouvoir accéder au catalogue de A.
+**À vérifier :**
+- Après que A supprime B, appeler `GET /JellyFed/catalog` sur A avec le token que B utilisait
+- Attendre que le token per-peer soit actif (après au moins une sync avec auto-registration)
+- Vérifier que la réponse est `401 Unauthorized`
+- Vérifier que le token global de A ne fonctionne pas non plus si B n'a jamais fait d'auto-registration
+
+### TEST-03 — Catalogue distant mis à jour
+**Contexte :** Les items de B qui étaient visibles chez A doivent disparaître de l'interface Jellyfin sans intervention manuelle.
+**À vérifier :**
+- La purge (`RemoveLibraryItems`) supprime les items via `ILibraryManager.DeleteItem()`
+- L'interface Jellyfin de A ne montre plus les films/séries de B immédiatement
+- Aucun rescan manuel nécessaire
+- Si `DeleteItem` échoue sur certains items : les items disparaissent lors du prochain scan
+
+---
+
+## Bugs corrigés
 
 ### BUG-01 — Bouton Remove Peer : carré blanc sans texte
-**Symptôme :** Dans la page de configuration, le bouton "Remove" d'un peer s'affiche comme un grand carré blanc sans texte.
-**Cause :** Le bouton `.emby-button` sans classe `raised` et sans `<span>` n'affiche pas son texte dans le CSS Jellyfin.
-**Fix :** Ajouter `raised` et wrapper le texte dans `<span>` → `class="emby-button raised button-cancel"`.
-**Statut :** ✅ Corrigé dans configPage.html
+**Fix :** `class="emby-button raised button-cancel"` + wrapper `<span>`.
+**Statut :** ✅
+
+### BUG-02 — Propagation en chaîne des titres (année dupliquée)
+**Symptôme :** `Titre (2025) (2025) (2025)` après plusieurs hops de sync.
+**Cause :** `GET /JellyFed/catalog` exposait aussi les items `.strm` de la jellyfed-library. Jellyfin utilise le nom de dossier `Titre (2025)` comme titre. Lors du hop suivant, le folder devient `Titre (2025) (2025)`.
+**Fix :** `QueryItems()` exclut les items dont le path commence par `LibraryPath`.
+**Statut :** ✅
+
+### BUG-03 — Peer supprimé conserve l'accès au catalogue
+**Symptôme :** Après que A supprime B, B peut encore appeler `GET /JellyFed/catalog` sur A avec le token global.
+**Cause :** Token global partagé entre tous les peers — pas révocable individuellement.
+**Fix :** Tokens d'accès par peer. À l'auto-registration, chaque peer reçoit un token unique généré par l'instance cible. Supprimer un peer invalide son token. Fallback token global pour les peers sans auto-registration.
+**Statut :** ✅
 
 ---
 
 ## Features à implémenter
-
-### FEAT-01 — Page config : liste des peers bloqués + déblocage
-**Contexte :** Les peers supprimés sont ajoutés à `BlockedPeerUrls`. Il n'y a actuellement aucun moyen de voir ou de retirer un peer de cette liste depuis l'UI.
-**Comportement souhaité :**
-- Section "Blocked Peers" dans la page de config
-- Liste des URLs bloquées avec un bouton "Unblock" par entrée
-- Retirer l'URL de `BlockedPeerUrls` et sauvegarder
-
----
-
-### FEAT-02 — Bouton "Sync All" dans la page de config
-**Contexte :** La sync manuelle se fait via l'API (`POST /JellyFed/peer/sync`). Il n'y a pas de bouton dans l'UI admin.
-**Comportement souhaité :**
-- Bouton "Sync Now" global dans la page de configuration
-- Optionnellement : bouton "Sync" par peer dans chaque fieldset
-- Feedback visuel (spinner / message "Sync en cours...")
-
----
 
 ### FEAT-03 — Partage de peers (gossip simplifié)
 **Contexte :** Si A est peer avec B et C, B et C ne se connaissent pas encore.
@@ -83,11 +107,13 @@
 ---
 
 ### FEAT-06 — Traçabilité des `.strm` par peer (tagging)
-**Contexte :** Les `.strm` sont éparpillés dans `{LibraryPath}/Films/` et `{LibraryPath}/Series/`. Il est difficile d'identifier quels fichiers viennent de quel peer, sauf à lire le manifest.
-**Comportement souhaité :**
-- Le manifest `.jellyfed-manifest.json` existe déjà et contient `peerName` par entrée → à exploiter dans l'UI
-- Section dans la page config : "Catalogue par peer" → liste les items synchés de chaque peer avec leur statut
-- Bouton "Purge peer catalog" : supprimer tous les `.strm` d'un peer spécifique sans toucher aux autres
+**Statut :** ✅ Partiellement implémenté
+**Implémenté :**
+- `GET /JellyFed/manifest/stats` : stats par peer (nb films, nb séries)
+- `POST /JellyFed/peer/purge` : purge complète d'un peer (fichiers + DB Jellyfin)
+- Section "Synced Catalogue" dans la page config avec bouton "Purge Catalog" par peer
+
+**Restant :**
 - Optionnel : tag dans le `.nfo` (`<studio>JellyFed:peer-b</studio>`) pour que Jellyfin puisse filtrer par peer
 
 ---
@@ -109,11 +135,6 @@
 ```xml
 <LibraryMode>unified</LibraryMode>  <!-- "unified" ou "per-peer" -->
 ```
-
-**Impact :**
-- `StrmWriter.cs` : modifier `GetMovieFolder()` et `GetSeriesFolder()` selon le mode
-- Page config : radio button "Unified library / One library per peer"
-- Migration : si le mode change, proposer de réorganiser les fichiers existants
 
 ---
 

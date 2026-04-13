@@ -47,6 +47,17 @@
                     </div>
 
                     <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="selfName">
+                            Instance Name
+                        </label>
+                        <input id="selfName" name="SelfName" type="text"
+                               class="emby-input" placeholder="my-server" />
+                        <div class="fieldDescription">
+                            Name used when this instance registers itself on peers. Appears as the peer name on their end.
+                        </div>
+                    </div>
+
+                    <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="selfUrl">
                             Self URL
                         </label>
@@ -57,6 +68,8 @@
                         </div>
                     </div>
 
+                    <!-- ── Peers ─────────────────────────────────────────── -->
+
                     <div class="sectionTitleContainer" style="margin-top: 2em;">
                         <h2 class="sectionTitle">Peers</h2>
                     </div>
@@ -66,16 +79,64 @@
                     </div>
 
                     <button id="addPeerBtn" type="button" class="emby-button raised">
-                        Add Peer
+                        <span>Add Peer</span>
                     </button>
 
-                    <div>
+                    <!-- ── Blocked Peers (FEAT-01) ────────────────────────── -->
+
+                    <div class="sectionTitleContainer" style="margin-top: 2em;">
+                        <h2 class="sectionTitle">Blocked Peers</h2>
+                    </div>
+
+                    <div class="fieldDescription" style="margin-bottom: 1em;">
+                        Peers that were manually removed. They cannot auto-register again unless unblocked.
+                    </div>
+
+                    <div id="blockedPeersContainer">
+                        <!-- Rendered by JS -->
+                    </div>
+
+                    <p id="blockedPeersEmpty" style="display:none; color:#888;">No blocked peers.</p>
+
+                    <!-- ── Save ───────────────────────────────────────────── -->
+
+                    <div style="margin-top: 1.5em;">
                         <button type="submit" class="emby-button raised button-submit">
-                            Save
+                            <span>Save</span>
                         </button>
                     </div>
 
                 </form>
+
+                <!-- ── Sync (FEAT-02) — outside form to avoid submit ─────── -->
+
+                <div class="sectionTitleContainer" style="margin-top: 2em;">
+                    <h2 class="sectionTitle">Sync</h2>
+                </div>
+
+                <div style="display: flex; align-items: center; gap: 1em; flex-wrap: wrap;">
+                    <button id="syncAllBtn" type="button" class="emby-button raised">
+                        <span>Sync Now (all peers)</span>
+                    </button>
+                    <span id="syncStatus" style="color:#aaa; font-size:.9em;"></span>
+                </div>
+
+                <!-- ── Synced Catalogue (FEAT-06) ─────────────────────────── -->
+
+                <div class="sectionTitleContainer" style="margin-top: 2em;">
+                    <h2 class="sectionTitle">Synced Catalogue</h2>
+                </div>
+
+                <div class="fieldDescription" style="margin-bottom: 1em;">
+                    Items currently synced from each peer. Purging removes all .strm files for that peer.
+                </div>
+
+                <div id="catalogueStatsContainer">
+                    <!-- Rendered by JS -->
+                </div>
+
+                <p id="catalogueStatsEmpty" style="display:none; color:#888;">No synced items yet.</p>
+
             </div>
         </div>
 
@@ -83,6 +144,8 @@
             (function () {
                 var pluginId = 'ff0164d7-e8c0-44c1-bc61-45017125a155';
                 var config = {};
+
+                // ── Peers ────────────────────────────────────────────────────
 
                 function renderPeers(page, peers) {
                     var container = page.querySelector('#peersContainer');
@@ -98,25 +161,68 @@
                             + '<label><input type="checkbox" class="peer-enabled" /> Enabled</label> '
                             + '<label><input type="checkbox" class="peer-movies" /> Sync Movies</label> '
                             + '<label><input type="checkbox" class="peer-series" /> Sync Series</label> '
-                            + '<button type="button" class="emby-button raised button-cancel remove-peer"><span>Remove</span></button>';
-                        // Support les deux casses (PascalCase XmlSerializer / camelCase STJ)
+                            + '<div style="margin-top:.75em;display:flex;gap:.5em;flex-wrap:wrap;">'
+                            + '<button type="button" class="emby-button raised button-cancel remove-peer"><span>Remove</span></button>'
+                            + '<button type="button" class="emby-button raised sync-peer-btn"><span>Sync</span></button>'
+                            + '</div>';
+
                         fs.querySelector('.peer-name').value = peer.Name || peer.name || '';
                         fs.querySelector('.peer-url').value = peer.Url || peer.url || '';
                         fs.querySelector('.peer-token').value = peer.FederationToken || peer.federationToken || '';
                         fs.querySelector('.peer-enabled').checked = !!(peer.Enabled || peer.enabled);
                         fs.querySelector('.peer-movies').checked = !!(peer.SyncMovies || peer.syncMovies);
                         fs.querySelector('.peer-series').checked = !!(peer.SyncSeries || peer.syncSeries);
+
                         fs.querySelector('.remove-peer').addEventListener('click', function () {
+                            var peerName = fs.querySelector('.peer-name').value;
                             var url = fs.querySelector('.peer-url').value;
-                            if (url) {
-                                // Marquer l'URL pour blacklist avant de supprimer le fieldset
-                                var marker = document.createElement('span');
-                                marker.setAttribute('data-blocked-url', url);
-                                marker.style.display = 'none';
-                                page.querySelector('#peersContainer').appendChild(marker);
+                            var removeBtn = fs.querySelector('.remove-peer');
+
+                            function doRemove() {
+                                if (url) {
+                                    var marker = document.createElement('span');
+                                    marker.setAttribute('data-blocked-url', url);
+                                    marker.style.display = 'none';
+                                    page.querySelector('#peersContainer').appendChild(marker);
+                                }
+                                fs.remove();
                             }
-                            fs.remove();
+
+                            // Si pas de nom ou pas de token configuré, retrait simple sans purge
+                            var token = page.querySelector('#federationToken').value;
+                            if (!peerName || !token) {
+                                doRemove();
+                                return;
+                            }
+
+                            removeBtn.disabled = true;
+                            removeBtn.querySelector('span').textContent = 'Suppression…';
+
+                            fetch('/JellyFed/peer/purge', {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/json',
+                                    'Authorization': 'Bearer ' + token
+                                },
+                                body: JSON.stringify({ peerName: peerName })
+                            }).then(function (r) {
+                                return r.ok ? r.json() : Promise.reject('HTTP ' + r.status);
+                            }).then(function (result) {
+                                var msg = 'Catalog purged';
+                                if (result) { msg += ' (' + (result.deletedMovies || 0) + ' movies, ' + (result.deletedSeries || 0) + ' series)'; }
+                                console.log('JellyFed remove peer "' + peerName + '": ' + msg);
+                                doRemove();
+                            }).catch(function (err) {
+                                console.warn('JellyFed purge failed for "' + peerName + '": ' + err + '. Removing peer anyway.');
+                                doRemove();
+                            });
                         });
+
+                        fs.querySelector('.sync-peer-btn').addEventListener('click', function () {
+                            var peerName = fs.querySelector('.peer-name').value;
+                            triggerSync(page, peerName || null);
+                        });
+
                         container.appendChild(fs);
                     });
                 }
@@ -135,36 +241,208 @@
                 }
 
                 function collectBlockedUrls(page) {
-                    // URLs marquées pour blocage (peers supprimés via le bouton Remove)
                     return Array.from(page.querySelectorAll('#peersContainer [data-blocked-url]'))
                         .map(function (el) { return el.getAttribute('data-blocked-url'); });
                 }
 
+                // ── Blocked Peers (FEAT-01) ──────────────────────────────────
+
+                function renderBlockedPeers(page, blockedUrls) {
+                    var container = page.querySelector('#blockedPeersContainer');
+                    var emptyMsg = page.querySelector('#blockedPeersEmpty');
+                    if (!container) { return; }
+                    container.innerHTML = '';
+
+                    if (!blockedUrls || blockedUrls.length === 0) {
+                        emptyMsg.style.display = 'block';
+                        return;
+                    }
+                    emptyMsg.style.display = 'none';
+
+                    blockedUrls.forEach(function (url) {
+                        var row = document.createElement('div');
+                        row.style.cssText = 'display:flex;align-items:center;gap:1em;margin-bottom:.5em;';
+                        row.setAttribute('data-blocked-entry', url);
+
+                        var label = document.createElement('span');
+                        label.textContent = url;
+                        label.style.flex = '1';
+
+                        var btn = document.createElement('button');
+                        btn.type = 'button';
+                        btn.className = 'emby-button raised';
+                        btn.innerHTML = '<span>Unblock</span>';
+                        btn.addEventListener('click', function () {
+                            row.remove();
+                            if (container.querySelectorAll('[data-blocked-entry]').length === 0) {
+                                emptyMsg.style.display = 'block';
+                            }
+                        });
+
+                        row.appendChild(label);
+                        row.appendChild(btn);
+                        container.appendChild(row);
+                    });
+                }
+
+                function collectCurrentBlockedUrls(page) {
+                    return Array.from(page.querySelectorAll('#blockedPeersContainer [data-blocked-entry]'))
+                        .map(function (el) { return el.getAttribute('data-blocked-entry'); });
+                }
+
+                // ── Synced Catalogue (FEAT-06) ───────────────────────────────
+
+                function loadManifestStats(page) {
+                    var token = page.querySelector('#federationToken').value;
+                    if (!token) { return; }
+
+                    fetch('/JellyFed/manifest/stats', {
+                        headers: { 'Authorization': 'Bearer ' + token }
+                    }).then(function (r) {
+                        if (!r.ok) { return null; }
+                        return r.json();
+                    }).then(function (data) {
+                        renderCatalogueStats(page, data && data.peers ? data.peers : []);
+                    }).catch(function () {});
+                }
+
+                function renderCatalogueStats(page, peers) {
+                    var container = page.querySelector('#catalogueStatsContainer');
+                    var emptyMsg = page.querySelector('#catalogueStatsEmpty');
+                    if (!container) { return; }
+                    container.innerHTML = '';
+
+                    if (!peers || peers.length === 0) {
+                        emptyMsg.style.display = 'block';
+                        return;
+                    }
+                    emptyMsg.style.display = 'none';
+
+                    peers.forEach(function (peer) {
+                        var row = document.createElement('div');
+                        row.style.cssText = 'display:flex;align-items:center;gap:1em;flex-wrap:wrap;border:1px solid #333;padding:.75em 1em;margin-bottom:.5em;border-radius:4px;';
+
+                        var info = document.createElement('div');
+                        info.style.flex = '1';
+                        info.innerHTML = '<strong>' + escHtml(peer.name || peer.Name || '') + '</strong>'
+                            + ' &nbsp;— '
+                            + (peer.movieCount || peer.MovieCount || 0) + ' movie(s), '
+                            + (peer.seriesCount || peer.SeriesCount || 0) + ' series';
+
+                        var btn = document.createElement('button');
+                        btn.type = 'button';
+                        btn.className = 'emby-button raised button-cancel';
+                        btn.innerHTML = '<span>Purge Catalog</span>';
+                        btn.addEventListener('click', function () {
+                            var pName = peer.name || peer.Name || '';
+                            if (!confirm('Delete all synced .strm files from peer "' + pName + '"?\nThis cannot be undone.')) {
+                                return;
+                            }
+                            var token = page.querySelector('#federationToken').value;
+                            btn.disabled = true;
+                            btn.querySelector('span').textContent = 'Purging…';
+                            fetch('/JellyFed/peer/purge', {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/json',
+                                    'Authorization': 'Bearer ' + token
+                                },
+                                body: JSON.stringify({ peerName: pName })
+                            }).then(function (r) { return r.json(); }).then(function (result) {
+                                if (result && result.status === 'ok') {
+                                    info.innerHTML = '<strong>' + escHtml(pName) + '</strong>'
+                                        + ' — purged ' + result.deletedMovies + ' movie(s), '
+                                        + result.deletedSeries + ' series.';
+                                    btn.style.display = 'none';
+                                } else {
+                                    btn.disabled = false;
+                                    btn.querySelector('span').textContent = 'Purge Catalog';
+                                    alert('Purge failed.');
+                                }
+                            }).catch(function () {
+                                btn.disabled = false;
+                                btn.querySelector('span').textContent = 'Purge Catalog';
+                                alert('Purge error.');
+                            });
+                        });
+
+                        row.appendChild(info);
+                        row.appendChild(btn);
+                        container.appendChild(row);
+                    });
+                }
+
+                // ── Sync (FEAT-02) ────────────────────────────────────────────
+
+                function triggerSync(page, peerName) {
+                    var token = page.querySelector('#federationToken').value;
+                    if (!token) {
+                        alert('Federation token not set — cannot trigger sync.');
+                        return;
+                    }
+                    var statusEl = page.querySelector('#syncStatus');
+                    statusEl.textContent = 'Queuing sync…';
+                    fetch('/JellyFed/peer/sync', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': 'Bearer ' + token
+                        },
+                        body: JSON.stringify({ peerName: peerName || null })
+                    }).then(function (r) {
+                        if (r.ok) {
+                            statusEl.textContent = peerName
+                                ? 'Sync queued for "' + peerName + '".'
+                                : 'Sync queued for all peers.';
+                        } else {
+                            statusEl.textContent = 'Error: HTTP ' + r.status;
+                        }
+                        setTimeout(function () { statusEl.textContent = ''; }, 4000);
+                    }).catch(function () {
+                        statusEl.textContent = 'Network error.';
+                        setTimeout(function () { statusEl.textContent = ''; }, 4000);
+                    });
+                }
+
+                // ── Config load / save ────────────────────────────────────────
+
                 function loadConfig(page) {
                     ApiClient.getPluginConfiguration(pluginId).then(function (loaded) {
                         config = loaded;
-                        // Support PascalCase (XmlSerializer) et camelCase (System.Text.Json)
                         page.querySelector('#federationToken').value = loaded.FederationToken || loaded.federationToken || '';
                         page.querySelector('#syncIntervalHours').value = loaded.SyncIntervalHours || loaded.syncIntervalHours || 6;
                         page.querySelector('#libraryPath').value = loaded.LibraryPath || loaded.libraryPath || '/config/jellyfed-library';
+                        page.querySelector('#selfName').value = loaded.SelfName || loaded.selfName || '';
                         page.querySelector('#selfUrl').value = loaded.SelfUrl || loaded.selfUrl || '';
+
                         var peers = loaded.Peers || loaded.peers || [];
                         renderPeers(page, peers);
+
+                        var blocked = loaded.BlockedPeerUrls || loaded.blockedPeerUrls || [];
+                        renderBlockedPeers(page, blocked);
+
+                        loadManifestStats(page);
                     });
                 }
 
                 function saveConfig(page, e) {
                     e.preventDefault();
                     Dashboard.showLoadingMsg();
-                    var currentBlocked = (config && (config.BlockedPeerUrls || config.blockedPeerUrls)) || [];
+
+                    // Nouvelles URLs bloquées (peers supprimés dans cette session)
                     var newBlocked = collectBlockedUrls(page);
-                    var allBlocked = currentBlocked.concat(newBlocked).filter(function (u, i, a) {
+                    // URLs toujours bloquées (affichées dans la section Blocked Peers, non débloquées)
+                    var stillBlocked = collectCurrentBlockedUrls(page);
+                    // Union des deux, sans doublon
+                    var allBlocked = stillBlocked.concat(newBlocked).filter(function (u, i, a) {
                         return u && a.indexOf(u) === i;
                     });
+
                     var payload = {
                         FederationToken: page.querySelector('#federationToken').value,
                         SyncIntervalHours: parseInt(page.querySelector('#syncIntervalHours').value, 10) || 6,
                         LibraryPath: page.querySelector('#libraryPath').value,
+                        SelfName: page.querySelector('#selfName').value,
                         SelfUrl: page.querySelector('#selfUrl').value,
                         Peers: collectPeers(page),
                         BlockedPeerUrls: allBlocked
@@ -174,13 +452,18 @@
                     });
                 }
 
+                // ── Helpers ───────────────────────────────────────────────────
+
+                function escHtml(str) {
+                    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+                }
+
+                // ── Wiring ────────────────────────────────────────────────────
+
                 var page = document.querySelector('#JellyFedConfigPage');
 
-                // pageshow : refresh navigateur / retour arrière navigateur
                 page.addEventListener('pageshow', function () { loadConfig(page); });
-                // viewshow : event SPA Jellyfin (navigation interne)
                 page.addEventListener('viewshow', function () { loadConfig(page); });
-                // Appel direct différé : filet de sécurité si aucun event ne se déclenche
                 setTimeout(function () { loadConfig(page); }, 0);
 
                 page.querySelector('#JellyFedConfigForm').addEventListener('submit', function (e) {
@@ -190,6 +473,11 @@
                 page.querySelector('#addPeerBtn').addEventListener('click', function () {
                     renderPeers(page, collectPeers(page).concat([{}]));
                 });
+
+                page.querySelector('#syncAllBtn').addEventListener('click', function () {
+                    triggerSync(page, null);
+                });
+
             })();
         </script>
     </div>

@@ -20,6 +20,7 @@ public class PluginConfiguration : BasePluginConfiguration
         LibraryPath = "/config/jellyfed-library";
         FederationToken = string.Empty;
         SelfUrl = string.Empty;
+        SelfName = string.Empty;
     }
 
     /// <summary>
@@ -59,4 +60,10 @@ public class PluginConfiguration : BasePluginConfiguration
     /// Gets or sets the URL by which this instance is reachable from peers (used for auto-registration).
     /// </summary>
     public string SelfUrl { get; set; }
+
+    /// <summary>
+    /// Gets or sets the display name this instance uses when registering itself on peers.
+    /// Defaults to "JellyFed" if left empty.
+    /// </summary>
+    public string SelfName { get; set; }
 }
