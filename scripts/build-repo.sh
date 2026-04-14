@@ -8,8 +8,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROJECT="$REPO_ROOT/Jellyfin.Plugin.JellyFed"
 REPO_DIR="$REPO_ROOT/repo"
-VPS_USER="root"
-VPS_HOST="194.99.23.234"
+VPS="vps-blynet"
 VPS_PATH="/srv/jellyfed-repo"
 DEPLOY=false
 
@@ -133,9 +132,10 @@ ls -lh "$REPO_DIR/"
 # --- Déploiement VPS ---
 if [[ "$DEPLOY" == true ]]; then
   echo ""
-  echo "==> Déploiement sur $VPS_HOST:$VPS_PATH ..."
-  ssh "$VPS_USER@$VPS_HOST" "mkdir -p $VPS_PATH"
-  rsync -avz --progress "$REPO_DIR/" "$VPS_USER@$VPS_HOST:$VPS_PATH/"
+  echo "==> Déploiement sur $VPS:$VPS_PATH ..."
+  ssh "$VPS" "mkdir -p $VPS_PATH"
+  scp "$REPO_DIR/manifest.json" "$VPS:$VPS_PATH/manifest.json"
+  scp "$REPO_DIR/$ZIP_NAME" "$VPS:$VPS_PATH/$ZIP_NAME"
   echo "    Déploiement OK"
   echo ""
   echo "==> URL du repo Jellyfin :"
