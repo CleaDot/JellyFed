@@ -177,6 +177,7 @@
                             var peerName = fs.querySelector('.peer-name').value;
                             var url = fs.querySelector('.peer-url').value;
                             var removeBtn = fs.querySelector('.remove-peer');
+                            console.log('[JellyFed] removePeer — "' + peerName + '" (' + url + ')');
 
                             function doRemove() {
                                 if (url) {
@@ -184,13 +185,16 @@
                                     marker.setAttribute('data-blocked-url', url);
                                     marker.style.display = 'none';
                                     page.querySelector('#peersContainer').appendChild(marker);
+                                    console.log('[JellyFed] removePeer — URL blacklistée : ' + url);
                                 }
                                 fs.remove();
+                                console.log('[JellyFed] removePeer — fieldset supprimé');
                             }
 
                             // Si pas de nom ou pas de token configuré, retrait simple sans purge
                             var token = page.querySelector('#federationToken').value;
                             if (!peerName || !token) {
+                                console.log('[JellyFed] removePeer — pas de nom/token, retrait simple sans purge');
                                 doRemove();
                                 return;
                             }
@@ -198,6 +202,7 @@
                             removeBtn.disabled = true;
                             removeBtn.querySelector('span').textContent = 'Suppression…';
 
+                            console.log('[JellyFed] removePeer — POST /JellyFed/peer/purge pour "' + peerName + '"');
                             fetch('/JellyFed/peer/purge', {
                                 method: 'POST',
                                 headers: {
@@ -208,12 +213,10 @@
                             }).then(function (r) {
                                 return r.ok ? r.json() : Promise.reject('HTTP ' + r.status);
                             }).then(function (result) {
-                                var msg = 'Catalog purged';
-                                if (result) { msg += ' (' + (result.deletedMovies || 0) + ' movies, ' + (result.deletedSeries || 0) + ' series)'; }
-                                console.log('JellyFed remove peer "' + peerName + '": ' + msg);
+                                console.log('[JellyFed] removePeer — purge OK:', result);
                                 doRemove();
                             }).catch(function (err) {
-                                console.warn('JellyFed purge failed for "' + peerName + '": ' + err + '. Removing peer anyway.');
+                                console.warn('[JellyFed] removePeer — purge failed (' + err + '), retrait quand même');
                                 doRemove();
                             });
                         });
@@ -299,11 +302,18 @@
                     fetch('/JellyFed/manifest/stats', {
                         headers: { 'Authorization': 'Bearer ' + token }
                     }).then(function (r) {
-                        if (!r.ok) { return null; }
+                        if (!r.ok) {
+                            console.warn('[JellyFed] manifest/stats — HTTP ' + r.status);
+                            return null;
+                        }
                         return r.json();
                     }).then(function (data) {
-                        renderCatalogueStats(page, data && data.peers ? data.peers : []);
-                    }).catch(function () {});
+                        var peers = data && data.peers ? data.peers : [];
+                        console.log('[JellyFed] manifest/stats —', peers.length + ' peer(s):', peers);
+                        renderCatalogueStats(page, peers);
+                    }).catch(function (err) {
+                        console.error('[JellyFed] manifest/stats — error:', err);
+                    });
                 }
 
                 function renderCatalogueStats(page, peers) {
@@ -380,6 +390,7 @@
                         alert('Federation token not set — cannot trigger sync.');
                         return;
                     }
+                    console.log('[JellyFed] triggerSync —', peerName ? '"' + peerName + '"' : 'all peers');
                     var statusEl = page.querySelector('#syncStatus');
                     statusEl.textContent = 'Queuing sync…';
                     fetch('/JellyFed/peer/sync', {
@@ -390,6 +401,7 @@
                         },
                         body: JSON.stringify({ peerName: peerName || null })
                     }).then(function (r) {
+                        console.log('[JellyFed] triggerSync — HTTP ' + r.status);
                         if (r.ok) {
                             statusEl.textContent = peerName
                                 ? 'Sync queued for "' + peerName + '".'
@@ -398,7 +410,8 @@
                             statusEl.textContent = 'Error: HTTP ' + r.status;
                         }
                         setTimeout(function () { statusEl.textContent = ''; }, 4000);
-                    }).catch(function () {
+                    }).catch(function (err) {
+                        console.error('[JellyFed] triggerSync — network error:', err);
                         statusEl.textContent = 'Network error.';
                         setTimeout(function () { statusEl.textContent = ''; }, 4000);
                     });
@@ -407,6 +420,7 @@
                 // ── Config load / save ────────────────────────────────────────
 
                 function loadConfig(page) {
+                    console.log('[JellyFed] loadConfig — fetching plugin configuration...');
                     ApiClient.getPluginConfiguration(pluginId).then(function (loaded) {
                         config = loaded;
                         page.querySelector('#federationToken').value = loaded.FederationToken || loaded.federationToken || '';
@@ -416,12 +430,18 @@
                         page.querySelector('#selfUrl').value = loaded.SelfUrl || loaded.selfUrl || '';
 
                         var peers = loaded.Peers || loaded.peers || [];
+                        console.log('[JellyFed] loadConfig — ' + peers.length + ' peer(s) loaded:', peers.map(function(p) {
+                            return { name: p.Name || p.name, url: p.Url || p.url, enabled: p.Enabled || p.enabled };
+                        }));
                         renderPeers(page, peers);
 
                         var blocked = loaded.BlockedPeerUrls || loaded.blockedPeerUrls || [];
+                        console.log('[JellyFed] loadConfig — ' + blocked.length + ' blocked URL(s):', blocked);
                         renderBlockedPeers(page, blocked);
 
                         loadManifestStats(page);
+                    }).catch(function(err) {
+                        console.error('[JellyFed] loadConfig — failed:', err);
                     });
                 }
 
@@ -447,8 +467,17 @@
                         Peers: collectPeers(page),
                         BlockedPeerUrls: allBlocked
                     };
+
+                    console.log('[JellyFed] saveConfig — saving ' + payload.Peers.length + ' peer(s):', payload.Peers.map(function(p) {
+                        return { name: p.Name, url: p.Url, enabled: p.Enabled };
+                    }));
+                    console.log('[JellyFed] saveConfig — blocked URLs:', payload.BlockedPeerUrls);
+
                     ApiClient.updatePluginConfiguration(pluginId, payload).then(function () {
+                        console.log('[JellyFed] saveConfig — OK');
                         Dashboard.processPluginConfigurationUpdateResult();
+                    }).catch(function(err) {
+                        console.error('[JellyFed] saveConfig — failed:', err);
                     });
                 }
 
@@ -471,7 +500,9 @@
                 });
 
                 page.querySelector('#addPeerBtn').addEventListener('click', function () {
-                    renderPeers(page, collectPeers(page).concat([{}]));
+                    var current = collectPeers(page);
+                    console.log('[JellyFed] addPeer — adding empty peer (total will be ' + (current.length + 1) + ')');
+                    renderPeers(page, current.concat([{}]));
                 });
 
                 page.querySelector('#syncAllBtn').addEventListener('click', function () {
