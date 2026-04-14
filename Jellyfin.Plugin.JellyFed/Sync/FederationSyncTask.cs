@@ -154,8 +154,27 @@ public class FederationSyncTask : IScheduledTask
                 if (item.Type == "Movie" && peer.SyncMovies)
                 {
                     seenMovieKeys.Add(key);
-                    if (manifest.Movies.ContainsKey(key))
+                    if (manifest.Movies.TryGetValue(key, out var existingMovieEntry))
                     {
+                        // Update STRM URL transparently (handles migration from old api_key format
+                        // to the new /JellyFed/stream/ proxy format).
+                        if (!string.IsNullOrEmpty(item.StreamUrl))
+                        {
+                            var folderName = Path.GetFileName(existingMovieEntry.Path);
+                            var strmPath = Path.Combine(existingMovieEntry.Path, folderName + ".strm");
+                            if (File.Exists(strmPath))
+                            {
+                                var current = await File.ReadAllTextAsync(strmPath, cancellationToken)
+                                    .ConfigureAwait(false);
+                                if (!string.Equals(current.Trim(), item.StreamUrl, StringComparison.Ordinal))
+                                {
+                                    await File.WriteAllTextAsync(strmPath, item.StreamUrl, System.Text.Encoding.UTF8, cancellationToken)
+                                        .ConfigureAwait(false);
+                                    _logger.LogDebug("JellyFed sync: updated STRM URL for '{Title}'", item.Title);
+                                }
+                            }
+                        }
+
                         skippedMovies++;
                         continue;
                     }

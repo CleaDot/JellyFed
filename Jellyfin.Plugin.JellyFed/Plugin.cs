@@ -23,6 +23,13 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
         : base(applicationPaths, xmlSerializer)
     {
         Instance = this;
+
+        // Auto-generate a federation token on first startup.
+        if (string.IsNullOrWhiteSpace(Configuration.FederationToken))
+        {
+            Configuration.FederationToken = Guid.NewGuid().ToString("N");
+            SaveConfiguration();
+        }
     }
 
     /// <inheritdoc />

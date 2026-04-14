@@ -185,9 +185,9 @@ public class FederationController : ControllerBase
                     AirDate = ep.PremiereDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
                     RuntimeMinutes = TicksToMinutes(ep.RunTimeTicks),
                     StillUrl = HasImage(ep, ImageType.Primary)
-                        ? $"{baseUrl}/Items/{ep.Id:N}/Images/Primary?api_key={token}"
+                        ? $"{baseUrl}/JellyFed/image/{ep.Id:N}/Primary?token={token}"
                         : null,
-                    StreamUrl = $"{baseUrl}/Videos/{ep.Id:N}/stream?api_key={token}&Static=true"
+                    StreamUrl = $"{baseUrl}/JellyFed/stream/{ep.Id:N}?token={token}"
                 });
             }
 
@@ -252,13 +252,13 @@ public class FederationController : ControllerBase
                 VoteAverage = item.CommunityRating.HasValue ? (double)item.CommunityRating.Value : null,
                 Genres = item.Genres ?? [],
                 PosterUrl = HasImage(item, ImageType.Primary)
-                    ? $"{baseUrl}/Items/{item.Id:N}/Images/Primary?api_key={token}"
+                    ? $"{baseUrl}/JellyFed/image/{item.Id:N}/Primary?token={token}"
                     : null,
                 BackdropUrl = HasImage(item, ImageType.Backdrop)
-                    ? $"{baseUrl}/Items/{item.Id:N}/Images/Backdrop?api_key={token}"
+                    ? $"{baseUrl}/JellyFed/image/{item.Id:N}/Backdrop?token={token}"
                     : null,
                 StreamUrl = kind == BaseItemKind.Movie
-                    ? $"{baseUrl}/Videos/{item.Id:N}/stream?api_key={token}&Static=true"
+                    ? $"{baseUrl}/JellyFed/stream/{item.Id:N}?token={token}"
                     : null,
                 AddedAt = item.DateCreated.ToString("O", CultureInfo.InvariantCulture),
                 UpdatedAt = item.DateModified.ToString("O", CultureInfo.InvariantCulture)
@@ -530,6 +530,168 @@ public class FederationController : ControllerBase
     }
 
     /// <summary>
+    /// Streams a media file directly, authenticated via federation token query parameter.
+    /// Used by .strm files — players request this URL directly, no Bearer header support needed.
+    /// </summary>
+    /// <param name="itemId">The Jellyfin item ID.</param>
+    /// <param name="token">The federation token of this instance.</param>
+    /// <returns>The raw media file with range-request support.</returns>
+    [HttpGet("stream/{itemId}")]
+    [AllowAnonymous]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "CA3003:Review code for file path injection vulnerabilities", Justification = "Path is retrieved from the Jellyfin library manager by GUID, not from user input directly.")]
+    public ActionResult StreamItem([FromRoute] string itemId, [FromQuery] string? token)
+    {
+        if (!ValidateStreamToken(token))
+        {
+            return Unauthorized();
+        }
+
+        if (!Guid.TryParse(itemId, out var guid))
+        {
+            return BadRequest("Invalid item ID.");
+        }
+
+        var item = _libraryManager.GetItemById(guid);
+        if (item is null || string.IsNullOrEmpty(item.Path) || !System.IO.File.Exists(item.Path))
+        {
+            return NotFound();
+        }
+
+        return PhysicalFile(item.Path, GetMimeType(item.Path), enableRangeProcessing: true);
+    }
+
+    /// <summary>
+    /// Serves an item image directly, authenticated via federation token query parameter.
+    /// Avoids embedding a Jellyfin API key in catalog URLs.
+    /// </summary>
+    /// <param name="itemId">The Jellyfin item ID.</param>
+    /// <param name="imageType">The image type: Primary or Backdrop.</param>
+    /// <param name="token">The federation token of this instance.</param>
+    /// <returns>The image file.</returns>
+    [HttpGet("image/{itemId}/{imageType}")]
+    [AllowAnonymous]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "CA3003:Review code for file path injection vulnerabilities", Justification = "Path is retrieved from the Jellyfin library manager by GUID, not from user input directly.")]
+    public ActionResult GetItemImage(
+        [FromRoute] string itemId,
+        [FromRoute] string imageType,
+        [FromQuery] string? token)
+    {
+        if (!ValidateStreamToken(token))
+        {
+            return Unauthorized();
+        }
+
+        if (!Guid.TryParse(itemId, out var guid))
+        {
+            return BadRequest("Invalid item ID.");
+        }
+
+        var type = imageType switch
+        {
+            "Primary" => (ImageType?)ImageType.Primary,
+            "Backdrop" => ImageType.Backdrop,
+            _ => null
+        };
+
+        if (type is null)
+        {
+            return BadRequest("Invalid image type. Use Primary or Backdrop.");
+        }
+
+        var item = _libraryManager.GetItemById(guid);
+        if (item is null || !HasImage(item, type.Value))
+        {
+            return NotFound();
+        }
+
+        var imageInfo = item.ImageInfos?.FirstOrDefault(img => img.Type == type.Value);
+        if (imageInfo is null || string.IsNullOrEmpty(imageInfo.Path) || !System.IO.File.Exists(imageInfo.Path))
+        {
+            return NotFound();
+        }
+
+        var mimeType = Path.GetExtension(imageInfo.Path).ToLowerInvariant() switch
+        {
+            ".png" => "image/png",
+            ".webp" => "image/webp",
+            _ => "image/jpeg"
+        };
+
+        return PhysicalFile(imageInfo.Path, mimeType);
+    }
+
+    /// <summary>
+    /// Emergency reset: generates a new federation token, removes all peers and
+    /// deletes all synced .strm files. Remote peers with the old token will receive
+    /// 401 errors and auto-clean on their next sync cycle.
+    /// </summary>
+    /// <returns>The new federation token.</returns>
+    [HttpPost("network/reset")]
+    [AllowAnonymous]
+    [ServiceFilter(typeof(FederationAuthFilter))]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]
+    public ActionResult ResetNetwork()
+    {
+        var config = Plugin.Instance?.Configuration;
+        if (config is null)
+        {
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, "Plugin configuration unavailable.");
+        }
+
+        var libraryPath = config.LibraryPath;
+
+        // Remove federated items from Jellyfin's library index before deleting files.
+        if (!string.IsNullOrWhiteSpace(libraryPath))
+        {
+            var manifest = ReadManifest(libraryPath);
+            var allPaths = manifest.Movies.Values.Select(e => e.Path)
+                .Concat(manifest.Series.Values.Select(e => e.Path))
+                .ToList();
+            RemoveLibraryItems(allPaths);
+        }
+
+        // Delete all .strm files and the manifest from disk.
+        if (!string.IsNullOrWhiteSpace(libraryPath))
+        {
+            var filmsDir = Path.Combine(libraryPath, "Films");
+            var seriesDir = Path.Combine(libraryPath, "Series");
+            var manifestPath = Path.Combine(libraryPath, ".jellyfed-manifest.json");
+            if (Directory.Exists(filmsDir))
+            {
+                Directory.Delete(filmsDir, true);
+            }
+
+            if (Directory.Exists(seriesDir))
+            {
+                Directory.Delete(seriesDir, true);
+            }
+
+            if (System.IO.File.Exists(manifestPath))
+            {
+                System.IO.File.Delete(manifestPath);
+            }
+        }
+
+        // Generate a new federation token and clear the peer list.
+        config.FederationToken = GenerateAccessToken();
+        config.Peers.Clear();
+        config.BlockedPeerUrls.Clear();
+        Plugin.Instance!.SaveConfiguration();
+
+        _logger.LogWarning(
+            "JellyFed: network reset — new federation token generated, all peers and STRMs cleared.");
+
+        return Ok(new { status = "ok", newToken = config.FederationToken });
+    }
+
+    /// <summary>
     /// Finds and removes all Jellyfin library items whose path starts with one of
     /// the given folder paths. Files have already been deleted from disk; we pass
     /// <c>DeleteFileLocation = false</c> so Jellyfin only removes the DB record.
@@ -586,6 +748,33 @@ public class FederationController : ControllerBase
         => item.HasImage(imageType, 0);
 
     private static string GenerateAccessToken() => Guid.NewGuid().ToString("N");
+
+    private static bool ValidateStreamToken(string? token)
+    {
+        var config = Plugin.Instance?.Configuration;
+        if (config is null || string.IsNullOrWhiteSpace(config.FederationToken))
+        {
+            return false;
+        }
+
+        return string.Equals(token, config.FederationToken, StringComparison.Ordinal);
+    }
+
+    private static string GetMimeType(string path)
+    {
+        var ext = Path.GetExtension(path).ToLowerInvariant();
+        return ext switch
+        {
+            ".mkv" => "video/x-matroska",
+            ".mp4" or ".m4v" => "video/mp4",
+            ".avi" => "video/x-msvideo",
+            ".mov" => "video/quicktime",
+            ".wmv" => "video/x-ms-wmv",
+            ".ts" => "video/mp2t",
+            ".webm" => "video/webm",
+            _ => "application/octet-stream"
+        };
+    }
 
     private static Manifest ReadManifest(string libraryPath)
     {

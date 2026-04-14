@@ -20,10 +20,15 @@
                         <label class="inputLabel inputLabelUnfocused" for="federationToken">
                             Federation Token (this instance)
                         </label>
-                        <input id="federationToken" name="FederationToken" type="text"
-                               class="emby-input" placeholder="Share this token with peers" />
+                        <div style="display:flex;gap:.5em;align-items:center;">
+                            <input id="federationToken" type="text" class="emby-input" readonly
+                                   style="flex:1;font-family:monospace;cursor:default;" />
+                            <button type="button" id="copyTokenBtn" class="emby-button raised" style="white-space:nowrap;">
+                                <span>Copy</span>
+                            </button>
+                        </div>
                         <div class="fieldDescription">
-                            Token that peers must present to access your catalog and streams.
+                            Auto-generated. Share this token with peers — they must enter it when adding you as a peer.
                         </div>
                     </div>
 
@@ -136,6 +141,23 @@
                 </div>
 
                 <p id="catalogueStatsEmpty" style="display:none; color:#888;">No synced items yet.</p>
+
+                <!-- ── Danger Zone ────────────────────────────────────────── -->
+
+                <div class="sectionTitleContainer" style="margin-top: 2em;">
+                    <h2 class="sectionTitle" style="color:#e07070;">Danger Zone</h2>
+                </div>
+
+                <div class="fieldDescription" style="margin-bottom: 1em;">
+                    Resetting the network generates a new federation token, removes all peers and deletes all synced
+                    .strm files locally. Remote instances that had you as a peer will receive 401 errors and
+                    clean up automatically on their next sync. Use this if your token leaked or too many
+                    stale peers accumulated.
+                </div>
+
+                <button id="resetNetworkBtn" type="button" class="emby-button raised button-cancel">
+                    <span>Reset Network</span>
+                </button>
 
             </div>
         </div>
@@ -469,6 +491,8 @@
                     });
 
                     var payload = {
+                        // FederationToken is auto-generated — pass the current value as-is
+                        // so it is preserved; the user cannot change it from the UI.
                         FederationToken: page.querySelector('#federationToken').value,
                         SyncIntervalHours: parseInt(page.querySelector('#syncIntervalHours').value, 10) || 6,
                         LibraryPath: page.querySelector('#libraryPath').value,
@@ -517,6 +541,71 @@
 
                 page.querySelector('#syncAllBtn').addEventListener('click', function () {
                     triggerSync(page, null);
+                });
+
+                page.querySelector('#copyTokenBtn').addEventListener('click', function () {
+                    var token = page.querySelector('#federationToken').value;
+                    if (!token) { return; }
+                    var btn = page.querySelector('#copyTokenBtn span');
+                    if (navigator.clipboard) {
+                        navigator.clipboard.writeText(token).then(function () {
+                            btn.textContent = 'Copied!';
+                            setTimeout(function () { btn.textContent = 'Copy'; }, 2000);
+                        });
+                    } else {
+                        // Fallback for non-HTTPS or older browsers
+                        var tmp = document.createElement('input');
+                        tmp.value = token;
+                        document.body.appendChild(tmp);
+                        tmp.select();
+                        document.execCommand('copy');
+                        document.body.removeChild(tmp);
+                        btn.textContent = 'Copied!';
+                        setTimeout(function () { btn.textContent = 'Copy'; }, 2000);
+                    }
+                });
+
+                page.querySelector('#resetNetworkBtn').addEventListener('click', function () {
+                    if (!confirm(
+                        'DANGER: This will generate a new federation token, remove all peers, and delete all synced .strm files.\n\n' +
+                        'You will need to rebuild your federation network from scratch.\n\n' +
+                        'Are you sure?')) {
+                        return;
+                    }
+                    var token = page.querySelector('#federationToken').value;
+                    var btn = page.querySelector('#resetNetworkBtn');
+                    btn.disabled = true;
+                    btn.querySelector('span').textContent = 'Resetting…';
+                    console.log('[JellyFed] resetNetwork — sending request...');
+
+                    fetch(jellyFedUrl('/JellyFed/network/reset'), {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': 'Bearer ' + token
+                        },
+                        body: JSON.stringify({})
+                    }).then(function (r) {
+                        return r.ok ? r.json() : Promise.reject('HTTP ' + r.status);
+                    }).then(function (result) {
+                        if (result && result.status === 'ok') {
+                            console.log('[JellyFed] resetNetwork — OK, new token:', result.newToken);
+                            page.querySelector('#federationToken').value = result.newToken;
+                            renderPeers(page, []);
+                            renderBlockedPeers(page, []);
+                            renderCatalogueStats(page, []);
+                            alert('Network reset complete. Your new federation token is now active.');
+                        } else {
+                            alert('Reset failed.');
+                        }
+                        btn.disabled = false;
+                        btn.querySelector('span').textContent = 'Reset Network';
+                    }).catch(function (err) {
+                        console.error('[JellyFed] resetNetwork — error:', err);
+                        alert('Reset error: ' + err);
+                        btn.disabled = false;
+                        btn.querySelector('span').textContent = 'Reset Network';
+                    });
                 });
 
             })();
