@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using Jellyfin.Plugin.JellyFed.Configuration;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Common.Plugins;
@@ -24,10 +25,28 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     {
         Instance = this;
 
+        var needsSave = false;
+
+        // Use Jellyfin's data directory as the library base path.
+        // Works on Docker (/config/data/), Linux standalone, Windows, etc.
+        // Migrates the old hardcoded /config/jellyfed-library default automatically.
+        var defaultLibraryPath = Path.Combine(applicationPaths.DataPath, "jellyfed-library");
+        if (string.IsNullOrWhiteSpace(Configuration.LibraryPath) ||
+            Configuration.LibraryPath == "/config/jellyfed-library")
+        {
+            Configuration.LibraryPath = defaultLibraryPath;
+            needsSave = true;
+        }
+
         // Auto-generate a federation token on first startup.
         if (string.IsNullOrWhiteSpace(Configuration.FederationToken))
         {
             Configuration.FederationToken = Guid.NewGuid().ToString("N");
+            needsSave = true;
+        }
+
+        if (needsSave)
+        {
             SaveConfiguration();
         }
     }

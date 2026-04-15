@@ -17,7 +17,7 @@ public class PluginConfiguration : BasePluginConfiguration
         Peers = [];
         BlockedPeerUrls = [];
         SyncIntervalHours = 6;
-        LibraryPath = "/config/jellyfed-library";
+        LibraryPath = string.Empty; // Set to {DataPath}/jellyfed-library on first startup by Plugin.cs
         FederationToken = string.Empty;
         SelfUrl = string.Empty;
         SelfName = string.Empty;
