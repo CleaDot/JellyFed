@@ -6,6 +6,7 @@ using System.Linq;
 using System.Net.Mime;
 using System.Text.Json;
 using Jellyfin.Data.Enums;
+using Jellyfin.Database.Implementations.Enums;
 using Jellyfin.Plugin.JellyFed.Api.Dto;
 using Jellyfin.Plugin.JellyFed.Sync;
 using MediaBrowser.Controller.Entities;

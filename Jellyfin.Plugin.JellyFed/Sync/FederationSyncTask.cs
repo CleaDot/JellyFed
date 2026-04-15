@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Data.Enums;
+using Jellyfin.Database.Implementations.Enums;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Entities;
@@ -68,7 +69,7 @@ public class FederationSyncTask : IScheduledTask
     {
         yield return new TaskTriggerInfo
         {
-            Type = TaskTriggerInfo.TriggerInterval,
+            Type = TaskTriggerInfoType.IntervalTrigger,
             IntervalTicks = TimeSpan.FromHours(
                 Plugin.Instance?.Configuration.SyncIntervalHours ?? 6).Ticks
         };
