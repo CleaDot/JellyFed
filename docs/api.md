@@ -2,8 +2,8 @@
 
 Tous les endpoints sont préfixés `/JellyFed/`. Ils coexistent avec l'API Jellyfin standard sur le même port.
 
-**Authentification :** header `Authorization: Bearer <federation_token>` sur les routes protégées.  
-Le token correspond à `PluginConfiguration.FederationToken` de l'instance cible.
+**Authentification :** header `Authorization: Bearer <token>` sur les routes protégées.
+Le token est soit l'`AccessToken` per-peer (post auto-registration), soit le `FederationToken` global (bootstrap).
 
 ---
 
@@ -15,61 +15,79 @@ Heartbeat. Utilisé par `PeerHeartbeatService` toutes les 5 minutes.
 
 **Réponse 200 :**
 ```json
-{
-  "version": "0.1.0",
-  "name": "JellyFed",
-  "status": "ok"
-}
+{ "version": "0.1.0", "name": "JellyFed", "status": "ok" }
 ```
+
+---
+
+### `GET /JellyFed/stream/{itemId}?token={federationToken}`
+
+Sert ou redirige le flux vidéo d'un item. Utilisé par les fichiers `.strm` — les players ne peuvent pas envoyer de headers d'auth, d'où le token en query param.
+
+**Comportement :**
+- Si `JellyfinApiKey` configurée → `302` vers `/Videos/{itemId}/stream?api_key={key}&Static=true`
+  (`Static=true` pour le support des range requests → seeking fonctionnel)
+- Sinon → `PhysicalFile` du fichier avec `enableRangeProcessing: true`
+
+**Réponses :**
+- `200` / `206` — stream ou fichier
+- `302` — redirect vers Jellyfin natif (si `JellyfinApiKey` configurée)
+- `401` — token manquant ou invalide
+- `404` — item introuvable
+
+---
+
+### `GET /JellyFed/image/{itemId}/{imageType}?token={federationToken}`
+
+Sert une image d'item (poster ou backdrop). Utilisé quand `JellyfinApiKey` n'est pas configurée.
+
+`{imageType}` : `Primary` ou `Backdrop`
+
+**Comportement :** lit `item.ImageInfos` et sert le fichier image via `PhysicalFile`.
+
+**Réponses :** `200`, `400` (type invalide), `401`, `404`
 
 ---
 
 ### `POST /JellyFed/peer/register`
 
-Enregistrement d'une instance distante comme peer.  
-Appelé automatiquement après chaque sync (auto-registration bidirectionnelle).
+Enregistrement d'une instance distante. Appelé automatiquement après chaque sync (auto-registration bidirectionnelle).
 
 **Body :**
 ```json
 {
   "name": "instance-a",
-  "url": "http://jellyfed-test-a:8096",
+  "url": "https://jellyfin-a.example.com",
   "federationToken": "token-instance-a"
 }
 ```
 
 **Réponses :**
-- `200 {"status": "ok", "message": "Peer registered.", "accessToken": "xyz..."}` — pair enregistré. `accessToken` est le token unique émis par cette instance pour le peer enregistrant. Le peer doit le stocker et l'utiliser comme Bearer pour tous ses appels futurs vers cette instance.
-- `200 {"status": "blocked", "message": "..."}` — URL dans la blacklist
-- `400` — champs manquants (Name, Url ou FederationToken vide)
-- `503` — configuration du plugin indisponible
-
-**Comportement :**
-- Si l'URL est dans `BlockedPeerUrls` → refus silencieux (status "blocked")
-- Si le peer existe déjà (même URL) → no-op (pas de doublon)
-- Sinon → ajout dans `config.Peers` avec `Enabled=true, SyncMovies=true, SyncSeries=true`
+- `200 {"status": "ok", "accessToken": "xyz..."}` — peer enregistré. Stocker `accessToken` pour tous les appels futurs vers cette instance.
+- `200 {"status": "blocked"}` — URL dans la blacklist
+- `400` — champs manquants
+- `503` — config indisponible
 
 ---
 
-## Endpoints protégés (federation_token requis)
+## Endpoints protégés (Bearer requis)
 
 ### `GET /JellyFed/catalog`
 
-Retourne le catalogue de cette instance (films + séries de la bibliothèque locale).  
-N'inclut **pas** les `.strm` générés par JellyFed (déduplication côté requêteur).
+Catalogue de cette instance (films + séries de la bibliothèque locale). Les `.strm` de la jellyfed-library sont exclus.
 
 **Query params :**
 | Param | Défaut | Description |
 |-------|--------|-------------|
-| `type` | (tous) | `"Movie"` ou `"Series"` |
-| `since` | (tous) | ISO 8601 — items modifiés après cette date |
-| `limit` | 5000 | Nombre max d'items |
+| `type` | tous | `"Movie"` ou `"Series"` |
+| `since` | tous | ISO 8601 — items modifiés après cette date |
+| `limit` | 5000 | Items max |
 | `offset` | 0 | Pagination |
 
 **Réponse 200 :**
 ```json
 {
-  "total": 6,
+  "total": 3,
   "items": [
     {
       "jellyfinId": "abc123def456",
@@ -83,23 +101,34 @@ N'inclut **pas** les `.strm` générés par JellyFed (déduplication côté requ
       "genres": ["Drama", "History"],
       "runtimeMinutes": 181,
       "voteAverage": 8.1,
-      "posterUrl": "http://peer-b:8096/Items/abc123/Images/Primary?api_key=TOKEN",
-      "backdropUrl": "http://peer-b:8096/Items/abc123/Images/Backdrop?api_key=TOKEN",
-      "streamUrl": "http://peer-b:8096/Videos/abc123/stream?api_key=TOKEN&Static=true",
+      "posterUrl": "https://peer-b/Items/abc123/Images/Primary?api_key=KEY",
+      "backdropUrl": "https://peer-b/Items/abc123/Images/Backdrop?api_key=KEY",
+      "streamUrl": "https://peer-b/JellyFed/stream/abc123?token=FED_TOKEN",
       "addedAt": "2026-01-15T10:30:00Z",
-      "updatedAt": "2026-01-15T10:30:00Z"
+      "updatedAt": "2026-01-15T10:30:00Z",
+      "container": "mkv",
+      "videoCodec": "hevc",
+      "width": 1920,
+      "height": 1080,
+      "audioCodec": "eac3",
+      "mediaStreams": [
+        { "type": "Audio", "codec": "eac3", "language": "eng", "title": "English (Atmos)", "isDefault": true, "isForced": false },
+        { "type": "Audio", "codec": "aac", "language": "fre", "title": "Français", "isDefault": false, "isForced": false },
+        { "type": "Subtitle", "codec": "subrip", "language": "eng", "title": "English", "isDefault": false, "isForced": false },
+        { "type": "Subtitle", "codec": "pgs", "language": "fre", "title": "Français", "isDefault": false, "isForced": false }
+      ]
     }
   ]
 }
 ```
 
-Pour les séries, `streamUrl` est `null` (les URLs sont au niveau épisode).
+Pour les séries, `streamUrl`, `container`, `videoCodec`, `width`, `height`, `audioCodec`, `mediaStreams` sont `null`/vides (les URLs et codecs sont au niveau épisode).
 
 ---
 
-### `GET /JellyFed/catalog/series/:seriesId/seasons`
+### `GET /JellyFed/catalog/series/{seriesId}/seasons`
 
-Retourne les saisons et épisodes d'une série.
+Saisons et épisodes d'une série. Codec info incluse par épisode.
 
 **Réponse 200 :**
 ```json
@@ -118,8 +147,17 @@ Retourne les saisons et épisodes d'une série.
           "overview": "...",
           "airDate": "2008-01-20",
           "runtimeMinutes": 47,
-          "stillUrl": "http://peer-b:8096/Items/ep001/Images/Primary?api_key=TOKEN",
-          "streamUrl": "http://peer-b:8096/Videos/ep001/stream?api_key=TOKEN&Static=true"
+          "stillUrl": "https://peer-b/Items/ep001/Images/Primary?api_key=KEY",
+          "streamUrl": "https://peer-b/JellyFed/stream/ep001?token=FED_TOKEN",
+          "container": "mkv",
+          "videoCodec": "h264",
+          "width": 1920,
+          "height": 1080,
+          "audioCodec": "aac",
+          "mediaStreams": [
+            { "type": "Audio", "codec": "aac", "language": "eng", "isDefault": true, "isForced": false },
+            { "type": "Subtitle", "codec": "subrip", "language": "eng", "isDefault": false, "isForced": false }
+          ]
         }
       ]
     }
@@ -127,16 +165,13 @@ Retourne les saisons et épisodes d'une série.
 }
 ```
 
-**Réponses d'erreur :**
-- `400` — seriesId invalide (pas un GUID)
-- `401` — token manquant ou invalide
-- `404` — série introuvable
+**Erreurs :** `400` (GUID invalide), `401`, `404`
 
 ---
 
 ### `GET /JellyFed/peers`
 
-Liste les peers configurés avec leur statut online/offline.
+Peers configurés avec statut online/offline.
 
 **Réponse 200 :**
 ```json
@@ -144,10 +179,10 @@ Liste les peers configurés avec leur statut online/offline.
   "peers": [
     {
       "name": "instance-b",
-      "url": "http://jellyfed-test-b:8096",
+      "url": "https://peer-b.example.com",
       "enabled": true,
       "online": true,
-      "lastSeen": "2026-04-13T01:59:00Z",
+      "lastSeen": "2026-04-15T20:00:00Z",
       "version": "0.1.0",
       "movieCount": 3,
       "seriesCount": 3
@@ -156,32 +191,56 @@ Liste les peers configurés avec leur statut online/offline.
 }
 ```
 
-Le statut `online`, `lastSeen`, `version`, `movieCount` et `seriesCount` sont mis à jour par `PeerHeartbeatService` toutes les 5 minutes.
-
 ---
 
 ### `POST /JellyFed/peer/sync`
 
-Déclenche une synchronisation manuelle (queue la tâche `FederationSyncTask`).
+Déclenche une sync manuelle (queue `FederationSyncTask`).
 
-**Body :**
+**Body :** `{ "peerName": "instance-b" }` — `null` pour syncer tous les peers.
+
+**Réponse 202 :** `{ "status": "queued" }`
+
+---
+
+### `GET /JellyFed/manifest/stats`
+
+Stats du manifest par peer (items synced).
+
+**Réponse 200 :**
 ```json
-{ "peerName": "instance-b" }
+{
+  "peers": [
+    { "name": "instance-b", "movieCount": 3, "seriesCount": 2 }
+  ]
+}
 ```
 
-`peerName` peut être `null` pour syncer tous les peers.
+---
 
-**Réponse 202 :**
-```json
-{ "status": "queued" }
-```
+### `POST /JellyFed/peer/purge`
+
+Supprime tous les `.strm` d'un peer du manifest et du filesystem.
+
+**Body :** `{ "peerName": "instance-b" }`
+
+**Réponse 200 :** `{ "status": "ok", "deletedMovies": 3, "deletedSeries": 2 }`
+
+---
+
+### `POST /JellyFed/network/reset`
+
+Reset total : nouveau token de fédération, suppression de tous les peers et `.strm`.
+Les peers ayant l'ancien token recevront `401` lors de leur prochain accès.
+
+**Réponse 200 :** `{ "status": "ok", "newToken": "nouveau_token" }`
 
 ---
 
 ## Notes d'implémentation
 
-**`streamUrl` dans les `.strm`** : contient l'API key de fédération. Cette clé doit avoir des droits minimaux (lecture stream uniquement) dans Jellyfin. Utiliser une API key dédiée (pas la clé admin).
+**URLs d'images :** si `JellyfinApiKey` est configurée sur l'instance source, le catalogue retourne des URLs directes vers l'API Jellyfin (`/Items/{id}/Images/...?api_key=KEY`). Sinon, il retourne des URLs vers le proxy JellyFed (`/JellyFed/image/{id}/{type}?token=...`). Dans les deux cas, l'artwork est aussi téléchargé localement lors de la sync (`poster.jpg`, `fanart.jpg`).
 
-**Delta sync** : le champ `since` réduit la charge réseau pour les grosses bibliothèques. Non encore exploité dans `FederationSyncTask` (toujours sync complète avec déduplication manifest).
+**Delta sync :** le champ `since` permet de ne synchroniser que les nouveautés. Non encore exploité dans `FederationSyncTask` (toujours sync complète avec déduplication via manifest).
 
-**TMDB IDs** : les URLs dans les `.strm` pointent directement vers le peer. Si le peer change d'URL ou de token, les `.strm` existants deviennent invalides et doivent être re-générés (purge du manifest + nouvelle sync).
+**`JellyfinApiKey` :** clé API dédiée à créer dans Jellyfin (Dashboard → API Keys). Doit avoir accès en lecture aux médias. Ne jamais utiliser la clé admin. Elle n'apparaît jamais dans les fichiers `.strm`.

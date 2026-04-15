@@ -2,176 +2,250 @@
 
 ## État d'avancement
 
-| Phase | Statut |
-|-------|--------|
-| 0 — Scaffolding | ✅ |
-| 1 — API catalogue | ✅ |
-| 2 — Sync + .strm | ✅ |
-| 3 — Gestion peers (base) | ✅ |
-| 3b — Auto-registration bidirectionnelle | ✅ |
-| 3c — Blacklist peers | ✅ |
-| 3d — UI : Blocked Peers, Sync Now, Catalogue stats | ✅ |
-| 3e — Tokens d'accès par peer (révocation à la suppression) | ✅ |
-| 3f — Exclusion des .strm du catalogue exposé | ✅ |
-| 3g — SelfName configurable | ✅ |
-| 4 — Multi-source / IMediaSourceProvider | 🔜 |
-| 5 — Gossip protocol | 🔜 |
-| 6 — Distribution publique | 🔜 |
+| Phase | Statut | Version |
+|-------|--------|---------|
+| 0 — Scaffolding | ✅ | 0.1.0.1 |
+| 1 — API catalogue | ✅ | 0.1.0.2 |
+| 2 — Sync + .strm | ✅ | 0.1.0.3 |
+| 3 — Gestion peers (base) | ✅ | 0.1.0.4 |
+| 3b — Auto-registration bidirectionnelle | ✅ | 0.1.0.6 |
+| 3c — Blacklist peers | ✅ | 0.1.0.7 |
+| 3d — UI : Blocked Peers, Sync Now, Catalogue stats | ✅ | 0.1.0.8 |
+| 3e — Tokens d'accès par peer (révocation) | ✅ | 0.1.0.9 |
+| 3f — Exclusion .strm du catalogue exposé | ✅ | 0.1.0.10 |
+| 3g — SelfName configurable | ✅ | 0.1.0.11 |
+| 4a — Proxy stream/image (no API key in .strm) | ✅ | 0.1.0.12 |
+| 4b — Compat Jellyfin 10.11 + .NET 9 | ✅ | 0.1.0.12 |
+| 4c — HTTPS X-Forwarded-Proto + images natives | ✅ | 0.1.0.13 |
+| 4d — Codec info NFO + seeking + pistes audio/sous-titres | ✅ | 0.1.0.14 |
+| 5 — UI settings refonte | 🔜 | — |
+| 6 — Gestion bibliothèques par peer | 🔜 | — |
+| 7 — Peer-of-peer discovery | 🔜 | — |
+| 8 — Multi-source / IMediaSourceProvider | 🔜 | — |
+| 9 — Distribution publique | 🔜 | — |
 
 ---
 
-## Tests à valider — suppression de peer
+## Priorités
 
-### TEST-01 — Fichiers distants supprimés chez les peers
-**Contexte :** Quand A supprime le peer B, les `.strm` de B doivent disparaître de la bibliothèque de A.
+```
+P1  Bugs critiques (SRT subtitles, stream edge cases)
+P2  UI settings refonte
+P3  Gestion bibliothèques par peer (FEAT-07)
+P4  Peer-of-peer discovery / gossip (FEAT-03) — désactivé par défaut
+P5  Multi-source (FEAT-08)
+P6  Distribution publique
+```
+
+---
+
+## Tests à valider
+
+### Streaming & lecture (v0.1.0.12–0.1.0.14)
+
+#### TEST-10 — Direct play H264/MP4
+**Contexte :** Un film en H264/MP4 depuis le peer doit se lire sans transcodage.
+**À vérifier :**
+- La lecture démarre sans délai
+- Aucun transcodage visible dans les logs Jellyfin du client
+- La qualité est native (aucune dégradation)
+- **Critère de succès :** lecture fluide, `PlayMethod: DirectPlay` ou `DirectStream` dans les logs
+
+#### TEST-11 — Transcodage HLS MKV/HEVC
+**Contexte :** Un film en HEVC/MKV doit être transcodé en H264/HLS par le Jellyfin client.
+**Prérequis :** sync effectuée + rescan bibliothèque.
+**À vérifier :**
+- Le NFO du film contient `<fileinfo><streamdetails><video><codec>hevc</codec>...`
+- Jellyfin décide de transcoder (visible dans les logs ou l'indicateur de qualité)
+- La lecture démarre et la vidéo s'affiche correctement
+- **Critère de succès :** lecture fluide, indicateur "Transcoding" visible dans le dashboard Jellyfin
+
+#### TEST-12 — Seeking (saut temporel)
+**Contexte :** L'utilisateur saute à un timestamp arbitraire (ex : 45:30) dans un film.
+**À vérifier :**
+- En direct play H264 : la barre de progression répond, le saut fonctionne
+- En HLS transcodé : Jellyfin redémarre FFmpeg depuis le timestamp cible
+- Le seek ne provoque pas d'erreur ni de rechargement de page
+- Tester à différents points : début, milieu, dernières minutes
+- **Critère de succès :** seek en < 3 secondes, aucune erreur
+
+#### TEST-13 — Sélection piste audio
+**Contexte :** Un film avec plusieurs pistes audio (ex : VO anglais + VF français).
+**À vérifier :**
+- Le sélecteur de piste audio apparaît dans le player Jellyfin
+- Le nombre de pistes correspond aux pistes réelles du fichier source
+- Changer de piste redémarre la lecture sur la bonne piste
+- Les labels de langue (eng, fre...) sont affichés correctement
+- **Critère de succès :** toutes les pistes audio sont visibles et sélectionnables
+
+#### TEST-14 — Sous-titres PGS (bitmap)
+**Comportement attendu :** Les sous-titres PGS (Blu-ray) sont brûlés dans l'image vidéo lors du transcodage (hard-sub). Pas de sélection possible, mais visibles si la piste était activée côté source.
+**À vérifier :**
+- Les sous-titres PGS s'affichent dans la vidéo transcodée
+- Ils ne peuvent pas être désactivés (limitation connue — voir BUG-06)
+- **Critère de succès :** sous-titres PGS visibles dans la vidéo
+
+#### TEST-15 — Sous-titres SRT/ASS (texte) ← BUG CONNU
+**Comportement attendu :** Les sous-titres texte (SRT, ASS, SubRip) devraient apparaître comme piste soft-sub sélectionnable dans le player.
+**Comportement actuel :** Les sous-titres SRT/ASS ne s'affichent pas.
+**Voir :** BUG-05
+
+#### TEST-16 — Mise à jour automatique NFO existants
+**Contexte :** Un film déjà synced (avant v0.1.0.14) doit récupérer les infos codec sans Reset Network.
+**À vérifier :**
+- Déclencher une sync (Sync Now)
+- Vérifier que le `.nfo` du film contient maintenant `<fileinfo><streamdetails>`
+- Effectuer un rescan de la bibliothèque dans Jellyfin
+- Vérifier que les pistes audio/sous-titres apparaissent dans le player
+- **Critère de succès :** infos codec présentes dans le NFO après sync, pistes visibles après rescan
+
+### Authentification & tokens
+
+#### TEST-01 — Fichiers distants supprimés chez les peers
+**Contexte :** Quand A supprime le peer B, les `.strm` de B doivent disparaître.
 **À vérifier :**
 - Cliquer "Remove" sur le peer B depuis l'interface de A
-- Vérifier que `{LibraryPath}/Films/` et `{LibraryPath}/Series/` sont vidés des items de B
-- Vérifier que les items disparaissent de l'interface Jellyfin de A (sans rescan manuel)
-- Vérifier que le manifest `.jellyfed-manifest.json` ne contient plus d'entrées pour B
+- `{LibraryPath}/Films/` et `{LibraryPath}/Series/` vidés des items de B
+- Items disparaissent de l'interface Jellyfin (sans rescan manuel)
+- `.jellyfed-manifest.json` ne contient plus d'entrées pour B
+- **Critère de succès :** disparition immédiate ou lors du prochain scan
 
-### TEST-02 — Accès au catalogue révoqué
-**Contexte :** Après suppression, B ne doit plus pouvoir accéder au catalogue de A.
+#### TEST-02 — Accès au catalogue révoqué après suppression peer
 **À vérifier :**
-- Après que A supprime B, appeler `GET /JellyFed/catalog` sur A avec le token que B utilisait
-- Attendre que le token per-peer soit actif (après au moins une sync avec auto-registration)
-- Vérifier que la réponse est `401 Unauthorized`
-- Vérifier que le token global de A ne fonctionne pas non plus si B n'a jamais fait d'auto-registration
+- Après que A supprime B, appeler `GET /JellyFed/catalog` sur A avec l'ancien token de B
+- **Critère de succès :** `401 Unauthorized`
 
-### TEST-03 — Catalogue distant mis à jour
-**Contexte :** Les items de B qui étaient visibles chez A doivent disparaître de l'interface Jellyfin sans intervention manuelle.
+#### TEST-03 — Auto-registration bidirectionnelle
 **À vérifier :**
-- La purge (`RemoveLibraryItems`) supprime les items via `ILibraryManager.DeleteItem()`
-- L'interface Jellyfin de A ne montre plus les films/séries de B immédiatement
-- Aucun rescan manuel nécessaire
-- Si `DeleteItem` échoue sur certains items : les items disparaissent lors du prochain scan
+- A configure B manuellement
+- A effectue une sync
+- B voit A apparaître automatiquement dans sa liste de peers
+- B est activé et synchronise les films de A au prochain cycle
+- **Critère de succès :** A visible dans les peers de B, sync de B vers A fonctionnelle
+
+### Images & URLs
+
+#### TEST-17 — Images via proxy JellyFed (sans JellyfinApiKey)
+**Contexte :** `JellyfinApiKey` non configurée → URLs `/JellyFed/image/{id}/{type}?token=...`
+**À vérifier :**
+- Les posters s'affichent dans Jellyfin (en local depuis le disque — téléchargés à la sync)
+- Les backdrops s'affichent
+- **Critère de succès :** artwork visible dans la bibliothèque fédérée
+
+#### TEST-18 — Images via API Jellyfin native (avec JellyfinApiKey)
+**Contexte :** `JellyfinApiKey` configurée → URLs `/Items/{id}/Images/Primary?api_key=...`
+**À vérifier :**
+- Pas d'erreurs 404 dans les logs Jellyfin du peer source
+- Artwork affiché correctement en haute résolution
+- **Critère de succès :** aucune erreur 404 image dans les journaux
+
+#### TEST-19 — HTTPS derrière nginx (X-Forwarded-Proto)
+**Contexte :** Jellyfin derrière un reverse proxy nginx avec TLS.
+**À vérifier :**
+- Les URLs générées dans le catalogue utilisent `https://` (pas `http://`)
+- Vérifier dans `GET /JellyFed/catalog` que `streamUrl`, `posterUrl`, `backdropUrl` commencent par `https://`
+- **Critère de succès :** toutes les URLs en `https://`
 
 ---
 
-## Bugs corrigés
+## Bugs connus
+
+### BUG-05 — Sous-titres SRT/ASS non affichés
+**Symptôme :** Les sous-titres texte (SRT, SubRip, ASS) ne s'affichent pas dans le player Jellyfin côté client. Les sous-titres PGS (bitmap Blu-ray) sont eux brûlés dans la vidéo lors du transcodage (hard-sub, non désactivable).
+**Cause probable :** Lors du transcodage HLS depuis une URL HTTP distante, Jellyfin/FFmpeg n'extrait pas les pistes texte en WebVTT séparées. Le mécanisme de soft-sub requiert que la piste soit extraite dans le manifest HLS, ce qui n'est pas automatique pour les sources HTTP distantes.
+**Statut :** 🔴 À investiguer en priorité P1
+**Piste :** Explorer les options FFmpeg pour l'extraction WebVTT (`-map 0:s:0 -c:s webvtt`) dans le profil de transcodage Jellyfin pour les sources HTTP.
+
+### BUG-06 — PGS brûlés en hard-sub (non désactivable)
+**Symptôme :** Sous-titres PGS toujours visibles, pas de sélection possible.
+**Cause :** FFmpeg brûle les sous-titres bitmap dans la vidéo lors du transcodage — comportement attendu de Jellyfin pour les PGS. La sélection soft-sub PGS n'est pas supportée en transcodage HLS.
+**Statut :** 🟡 Limitation connue, pas prioritaire
 
 ### BUG-01 — Bouton Remove Peer : carré blanc sans texte
 **Fix :** `class="emby-button raised button-cancel"` + wrapper `<span>`.
-**Statut :** ✅
+**Statut :** ✅ Corrigé
 
 ### BUG-02 — Propagation en chaîne des titres (année dupliquée)
 **Symptôme :** `Titre (2025) (2025) (2025)` après plusieurs hops de sync.
-**Cause :** `GET /JellyFed/catalog` exposait aussi les items `.strm` de la jellyfed-library. Jellyfin utilise le nom de dossier `Titre (2025)` comme titre. Lors du hop suivant, le folder devient `Titre (2025) (2025)`.
 **Fix :** `QueryItems()` exclut les items dont le path commence par `LibraryPath`.
-**Statut :** ✅
+**Statut :** ✅ Corrigé
 
 ### BUG-03 — Peer supprimé conserve l'accès au catalogue
-**Symptôme :** Après que A supprime B, B peut encore appeler `GET /JellyFed/catalog` sur A avec le token global.
-**Cause :** Token global partagé entre tous les peers — pas révocable individuellement.
-**Fix :** Tokens d'accès par peer. À l'auto-registration, chaque peer reçoit un token unique généré par l'instance cible. Supprimer un peer invalide son token. Fallback token global pour les peers sans auto-registration.
-**Statut :** ✅
+**Fix :** Tokens d'accès par peer — révocation immédiate à la suppression.
+**Statut :** ✅ Corrigé
+
+### BUG-04 — TypeLoadException SortOrder + MissingMethodException GetItemList (Jellyfin 10.11)
+**Fix :** Migration vers `Jellyfin.Database.Implementations.Enums.SortOrder`, packages 10.11.8, .NET 9.
+**Statut :** ✅ Corrigé
 
 ---
 
 ## Features à implémenter
 
-### FEAT-03 — Partage de peers (gossip simplifié)
-**Contexte :** Si A est peer avec B et C, B et C ne se connaissent pas encore.
-**Comportement souhaité :**
-- Option dans la config : `SharePeers` (activé/désactivé)
-- Quand A se connecte à B et à C, A envoie à B la liste de ses autres peers (C) et vice versa
-- B et C sont ajoutés en mode "pending" chez les autres peers (l'admin doit approuver ou auto-approve si configuré)
-- Propagation limitée à 1 hop pour éviter l'explosion de peers
+### FEAT-07 — Gestion bibliothèques par peer (P3)
+**Contexte :** Certains veulent une bibliothèque unifiée (comportement actuel), d'autres une bibliothèque séparée par peer.
 
-**Endpoints concernés :**
-- `GET /JellyFed/peers` renvoie déjà la liste → exploiter cette liste dans la sync
-- `POST /JellyFed/peer/register` gère déjà l'enregistrement d'un nouveau peer
+**Mode 1 — Bibliothèque unifiée (défaut actuel)**
+- Tout dans `{LibraryPath}/Films/` et `{LibraryPath}/Series/`
+- Déduplication active par TMDB ID
+
+**Mode 2 — Bibliothèque par peer**
+- `{LibraryPath}/{PeerName}/Films/` et `{LibraryPath}/{PeerName}/Series/`
+- L'utilisateur crée une bibliothèque Jellyfin par peer
+- Même film possible en double depuis plusieurs peers
+
+**Config suggérée :** `LibraryMode = "unified" | "per-peer"` par peer ou global.
+
+---
+
+### FEAT-03 — Peer-of-peer discovery / gossip (P4)
+**Contexte :** Si A est peer avec B et C, B et C ne se connaissent pas.
+**Comportement :**
+- Option `SharePeers` dans la config (désactivé par défaut)
+- Lors de la sync, A envoie à B la liste de ses autres peers (C)
+- B les ajoute en "pending" — l'admin approuve ou auto-approve si configuré
+- Propagation limitée à 1 hop
+
+**Endpoints :** `GET /JellyFed/peers` → déjà disponible. `POST /JellyFed/peer/register` → déjà disponible.
+
+---
+
+### FEAT-08 — Multi-source / IMediaSourceProvider (P5)
+**Contexte :** Même film disponible chez plusieurs peers → proposer plusieurs sources au client.
+- `sources.json` par item (stocké à côté du `.strm`)
+- `FederationMediaSourceProvider.cs` implémente `IMediaSourceProvider`
+- Tri des sources : qualité décroissante, peer le plus rapide en premier
+- Le client Jellyfin voit toutes les sources et peut choisir
 
 ---
 
 ### FEAT-04 — Rapatriement de catalogue ("recall")
-**Contexte :** Si A est peer avec B et C, et que le contenu de A est présent chez B et C sous forme de `.strm`, A peut vouloir "rappeler" ses propres items depuis les autres instances (utile si le disque local de A a été perdu/migré).
-**Comportement souhaité :**
+**Contexte :** A peut vouloir "rappeler" ses propres items depuis ses peers (utile après perte du disque).
 - Endpoint ou bouton "Recall my content from peers"
 - A interroge ses peers, identifie les `.strm` qui pointent vers A, et récupère les métadonnées
-- Usage principal : reconstruction d'une bibliothèque après migration
 
 ---
 
-### FEAT-05 — Suppression propagée du catalogue
-**Contexte :** Si A supprime B de ses peers, les `.strm` de B restent dans la bibliothèque de A (et potentiellement dans les bibliothèques des peers de A si FEAT-03 est actif).
-**Comportement souhaité :**
-- Quand A supprime B : A envoie un signal `DELETE` à B (`POST /JellyFed/peer/remove` ou `DELETE /JellyFed/peer/:name`)
-- B reçoit le signal et supprime les `.strm` de A de sa propre bibliothèque
-- Si `SharePeers` est actif : B propage le signal de suppression à ses propres peers qui connaissent A
-
-**Points d'attention :**
-- Le signal ne doit être accepté que si l'émetteur est bien le peer qui se supprime lui-même (auth par token)
-- Implémenter un mécanisme de confirmation pour éviter les suppressions involontaires
+### FEAT-05 — Suppression propagée
+**Contexte :** Si A supprime B, les `.strm` de B restent chez les peers de A.
+- Signal `POST /JellyFed/peer/leave` envoyé à B quand A supprime B
+- B supprime les `.strm` de A de sa bibliothèque
 
 ---
 
-### FEAT-06 — Traçabilité des `.strm` par peer (tagging)
-**Statut :** ✅ Partiellement implémenté
-**Implémenté :**
-- `GET /JellyFed/manifest/stats` : stats par peer (nb films, nb séries)
-- `POST /JellyFed/peer/purge` : purge complète d'un peer (fichiers + DB Jellyfin)
-- Section "Synced Catalogue" dans la page config avec bouton "Purge Catalog" par peer
-
-**Restant :**
-- Optionnel : tag dans le `.nfo` (`<studio>JellyFed:peer-b</studio>`) pour que Jellyfin puisse filtrer par peer
-
----
-
-### FEAT-07 — Organisation modulaire des bibliothèques
-**Contexte :** Certains utilisateurs veulent mélanger le contenu de tous les peers dans une seule grande bibliothèque. D'autres préfèrent une bibliothèque séparée par peer. Les deux approches doivent être supportées.
-
-**Mode 1 — Bibliothèque unifiée (comportement actuel)**
-- Tout dans `{LibraryPath}/Films/` et `{LibraryPath}/Series/`
-- L'utilisateur configure une seule paire de bibliothèques Jellyfin
-- Déduplication active : un seul `.strm` par item même s'il vient de plusieurs peers
-
-**Mode 2 — Bibliothèque par peer**
-- Chaque peer a son propre sous-dossier : `{LibraryPath}/{PeerName}/Films/` et `{LibraryPath}/{PeerName}/Series/`
-- L'utilisateur configure une bibliothèque Jellyfin par peer
-- Pas de déduplication inter-peers : le même film peut apparaître plusieurs fois (depuis des peers différents)
-
-**Configuration suggérée :**
-```xml
-<LibraryMode>unified</LibraryMode>  <!-- "unified" ou "per-peer" -->
-```
+### FEAT-06 — Tag peer dans les items Jellyfin (partiellement implémenté)
+**Statut :** ✅ `GET /JellyFed/manifest/stats` + `POST /JellyFed/peer/purge` + section "Synced Catalogue" dans l'UI.
+**Restant :** Tag `<studio>JellyFed:peer-b</studio>` dans le `.nfo` pour filtrage natif Jellyfin (optionnel).
 
 ---
 
 ## Améliorations techniques
 
-### TECH-01 — Rechargement de config à chaud
-**Problème :** Après modification du fichier XML de config (hors UI Jellyfin), le plugin garde l'ancienne config en mémoire jusqu'au redémarrage.
-**Solution :** Utiliser `Plugin.Instance!.SaveConfiguration()` / `LoadConfiguration()` et s'assurer que l'API `POST /Plugins/{id}/Configuration` force bien le rechargement en mémoire.
+### TECH-01 — Rechargement config à chaud
+Config modifiée hors UI → plugin garde l'ancienne en mémoire jusqu'au redémarrage.
 
-### TECH-02 — Gestion d'erreurs réseau plus robuste dans PeerClient
-**Problème :** Les erreurs de connexion à un peer sont loguées mais ne remontent pas d'informations utiles dans l'UI.
-**Solution :** Stocker le dernier message d'erreur dans `PeerStateStore` et l'afficher dans la section peers de la page config.
+### TECH-02 — Dernier message d'erreur par peer dans l'UI
+Stocker dans `PeerStateStore` + afficher dans la section peers de la page config.
 
 ### TECH-03 — Tests d'intégration
-**Contexte :** Aucun test unitaire/intégration pour l'instant.
-**Priorité :** Tester `FederationSyncTask` avec un mock `PeerClient`, `StrmWriter` avec un filesystem en mémoire, et `FederationController` avec WebApplicationFactory.
-
----
-
-## Phases futures
-
-### Phase 4 — Multi-source (`IMediaSourceProvider`)
-
-Même film disponible chez plusieurs peers → plusieurs sources proposées au client.
-
-- `sources.json` par item (stocké à côté du `.strm`)
-- `FederationMediaSourceProvider.cs` implémente `IMediaSourceProvider`
-- Tri des sources : qualité décroissante, peer préféré en premier
-- Le client Jellyfin voit toutes les sources et peut choisir
-
-### Phase 5 — Gossip protocol complet
-
-Voir FEAT-03. Découverte automatique via `GET /JellyFed/peers` périodique.
-
-### Phase 6 — Distribution publique
-
-- Packaging `manifest.json` pour le dépôt de plugins Jellyfin
-- Releases avec binaires versionnés
-- Documentation d'installation
-- Tests CI
+Tester `FederationSyncTask` (mock `PeerClient`), `StrmWriter` (filesystem en mémoire), `FederationController` (WebApplicationFactory).

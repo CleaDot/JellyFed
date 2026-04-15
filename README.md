@@ -2,7 +2,7 @@
 
 Plugin Jellyfin pour la fédération native d'instances.
 
-Connecte plusieurs serveurs Jellyfin entre eux : depuis un seul client, on accède aux bibliothèques de toutes les instances fédérées — sans proxy, sans frontend custom, de façon transparente pour les clients officiels.
+Connecte plusieurs serveurs Jellyfin entre eux : depuis un seul client, on accède aux bibliothèques de toutes les instances fédérées — avec artwork, métadonnées, transcodage HLS et sélection de pistes — de façon transparente pour tous les clients officiels.
 
 ---
 
@@ -15,107 +15,117 @@ Connecte plusieurs serveurs Jellyfin entre eux : depuis un seul client, on accè
 [Instance A  ←──── JellyFed ────→  Instance B]
        │                                 │
   Bibliothèque A                   Bibliothèque B
-  (locale)                         (partagée via .strm)
+  (locale)                         (partagée via .strm + NFO)
 ```
 
-Instance A installe JellyFed. Elle se connecte à l'Instance B (un ami, un serveur communautaire). Le plugin synchronise le catalogue de B dans A sous forme de fichiers `.strm` dans une bibliothèque virtuelle. Les clients Jellyfin voient les médias de B exactement comme s'ils étaient locaux — avec artwork, métadonnées, lecture directe.
+Instance A installe JellyFed. Elle se connecte à l'Instance B. Le plugin synchronise le catalogue de B dans A sous forme de fichiers `.strm` + `.nfo` dans une bibliothèque virtuelle. Les clients voient les médias de B comme s'ils étaient locaux — avec artwork, pistes audio/sous-titres, transcodage HLS si nécessaire.
 
 ---
 
-## Fonctionnalités implémentées
+## Fonctionnalités
 
-### Fédération de catalogue
-- Exposition du catalogue local via `GET /JellyFed/catalog` (films + séries)
-- Les items `.strm` de la jellyfed-library sont exclus du catalogue exposé (évite la propagation en chaîne)
-- Exposition des saisons/épisodes via `GET /JellyFed/catalog/series/:id/seasons`
-- Authentification par token de fédération (`Authorization: Bearer <token>`)
-- Delta sync : paramètre `?since=` pour ne synchroniser que les nouveautés
-- Pagination : `?limit=` et `?offset=`
-
-### Génération de fichiers `.strm`
-- Un `.strm` par film avec l'URL de stream du peer
-- Un `.strm` par épisode avec son URL de stream
-- Fichiers `.nfo` avec métadonnées (titre, année, TMDB ID, synopsis, genres, notes)
-- Téléchargement du poster et du backdrop depuis le peer
-- Organisation : `{LibraryPath}/Films/{Titre (Année)}/` et `{LibraryPath}/Series/{Titre}/Season XX/`
+### Catalogue & streaming
+- Exposition du catalogue local via `GET /JellyFed/catalog` (films + séries + codec info)
+- Proxy stream `/JellyFed/stream/{id}?token=...` — aucune clé API dans les `.strm`
+- Proxy image `/JellyFed/image/{id}/{type}?token=...` — fallback si pas de `JellyfinApiKey`
+- Infos codec + toutes les pistes audio/sous-titres exposées dans le catalogue
+- Décision transcodage HLS correcte grâce aux infos `<fileinfo><streamdetails>` dans les NFO
+- Seeking fonctionnel (range requests sur le fichier source)
 
 ### Synchronisation
 - Tâche planifiée `IScheduledTask` (intervalle configurable, défaut 6h)
-- Manifest JSON (`.jellyfed-manifest.json`) — évite la re-création des `.strm` déjà présents
-- Pruning automatique des `.strm` dont les items ont disparu du catalogue du peer
-- Déduplication par TMDB ID : les items déjà présents dans la bibliothèque locale ne sont pas re-créés en `.strm`
-- Déclenchement d'un rescan Jellyfin après chaque sync
+- Manifest JSON — évite la re-création des `.strm` déjà présents
+- Mise à jour automatique des NFO existants à chaque sync (codec, pistes audio, sous-titres)
+- Pruning automatique des `.strm` dont les items ont disparu du peer
+- Déduplication par TMDB ID (pas de doublon si contenu déjà présent localement)
+- Rescan Jellyfin déclenché après chaque sync
 
 ### Gestion des peers
-- Configuration via le panneau admin Jellyfin (page config custom)
-- Par peer : Nom, URL, Token de fédération, Enabled, SyncMovies, SyncSeries
-- Champ **Instance Name** : nom utilisé lors de l'auto-registration (affiché chez les peers)
-- Endpoint `GET /JellyFed/peers` : liste les peers avec statut online/offline
-- Endpoint `POST /JellyFed/peer/sync` : sync manuelle
-- Service heartbeat (`PeerHeartbeatService`) toutes les 5 minutes → statut online/offline
-- Stockage du statut peers dans `{LibraryPath}/.jellyfed-peers.json`
+- Configuration via le panneau admin Jellyfin
+- Statut online/offline via heartbeat toutes les 5 minutes
+- Auto-registration bidirectionnelle (A configure B → B découvre A automatiquement)
+- Tokens d'accès par peer — révocation immédiate à la suppression
+- Blacklist des peers supprimés manuellement
+- Sync manuelle par peer ou globale
 
-### Auto-registration bidirectionnelle
-- Après chaque sync, l'instance s'annonce au peer via `POST /JellyFed/peer/register`
-- Le peer ajoute l'instance comme peer en retour (activé et prêt à syncer)
-- La `SelfUrl` et le `SelfName` de l'instance doivent être configurés
+### Sécurité
+- Token de fédération auto-généré au démarrage (non éditable)
+- Clé API Jellyfin optionnelle (`JellyfinApiKey`) — reste côté serveur, jamais dans les `.strm`
+- Bouton "Reset Network" : nouveau token + suppression de tous les peers et `.strm`
+- `X-Forwarded-Proto` respecté derrière un reverse proxy
 
-### Tokens d'accès par peer
-- Lors de l'auto-registration, chaque peer reçoit un token unique généré par l'instance cible
-- Ce token remplace le token global dans la config du peer enregistrant
-- La révocation est immédiate : supprimer un peer invalide son token → 401 sur le catalog
-- Fallback token global pour les peers configurés manuellement sans auto-registration
+### UI admin
+- Peers avec statut, Sync Now par peer, stats catalogue (films/séries par peer)
+- Purge catalogue par peer, Blocked Peers avec déblocage
+- Token de fédération en lecture seule avec bouton Copy
+- Danger Zone : Reset Network
 
-### Blacklist peers
-- Les peers supprimés manuellement sont ajoutés à `BlockedPeerUrls`
-- Un peer blacklisté ne peut pas se re-enregistrer via `POST /JellyFed/peer/register`
-- Réponse `{"status": "blocked"}` renvoyée au peer refusé
+---
 
-### Page de configuration (UI admin)
-- **Blocked Peers** : liste des URLs bloquées avec bouton "Unblock"
-- **Sync Now** : bouton global + bouton par peer avec feedback visuel
-- **Synced Catalogue** : stats par peer (nb films, séries) avec bouton "Purge Catalog"
-- Le bouton "Remove" purge automatiquement les `.strm` du peer et retire les items de la bibliothèque Jellyfin
+## Compatibilité
+
+- **Jellyfin** : 10.11.x
+- **.NET** : 9.0
+- **Clients** : tous (web, Android, iOS, Infuse, Kodi...)
 
 ---
 
 ## Installation
 
-1. Compiler : `dotnet build -c Release`
-2. Copier `bin/Release/net8.0/Jellyfin.Plugin.JellyFed.dll` dans le dossier plugins Jellyfin :
-   `{config}/plugins/JellyFed_0.1.0.0/Jellyfin.Plugin.JellyFed.dll`
-3. Redémarrer Jellyfin
-4. Administration → Plugins → JellyFed → Configurer
+### Via le dépôt (recommandé)
+
+Ajoutez dans Jellyfin → Dashboard → Plugins → Repositories :
+```
+https://jellyfed.bly-net.com/repo/manifest.json
+```
+Puis installez JellyFed depuis le catalogue.
+
+### Manuelle
+
+1. Télécharger la dernière release depuis GitHub
+2. Extraire `Jellyfin.Plugin.JellyFed.dll`
+3. Copier dans `{config}/plugins/JellyFed_{version}/`
+4. Redémarrer Jellyfin
 
 ### Configuration minimale
 
 ```
-Federation Token : <token aléatoire>
+Federation Token : <auto-généré>
 Instance Name    : mon-serveur
+Self URL         : https://mon-jellyfin.example.com
 Sync Interval    : 6 (heures)
-Library Path     : /config/jellyfed-library
-Self URL         : http://mon-jellyfin:8096
+Library Path     : <auto-défini>
 ```
 
-Puis ajouter un peer (URL + token du peer distant) et cliquer Save.
+Ajouter un peer (URL + token du peer distant) et cliquer Save.
 
 ### Bibliothèques Jellyfin
 
-Après la première sync, ajouter les bibliothèques dans Jellyfin :
-- `{LibraryPath}/Films` → type Films
-- `{LibraryPath}/Series` → type Séries
+Après la première sync :
+- Ajouter `{LibraryPath}/Films` → type **Films**
+- Ajouter `{LibraryPath}/Series` → type **Séries**
+
+### JellyfinApiKey (optionnel)
+
+Créer une clé dédiée dans Dashboard → API Keys.
+La renseigner dans la config JellyFed. Permet :
+- Images en qualité native via l'API Jellyfin
+- Redirect du stream vers le pipeline natif Jellyfin (transcodage avancé)
 
 ---
 
 ## Documentation
 
-- [`docs/architecture.md`](docs/architecture.md) — Architecture technique complète
-- [`docs/api.md`](docs/api.md) — API de fédération (endpoints)
-- [`docs/roadmap.md`](docs/roadmap.md) — État d'avancement et features à venir
-- [`docs/strm.md`](docs/strm.md) — Fonctionnement des fichiers .strm dans Jellyfin
+- [`docs/architecture.md`](docs/architecture.md) — Architecture technique, flux de sync, authentification
+- [`docs/api.md`](docs/api.md) — Référence API (tous les endpoints + DTOs)
+- [`docs/strm.md`](docs/strm.md) — Fichiers .strm, NFO format, comportement lecture/transcodage
+- [`docs/roadmap.md`](docs/roadmap.md) — État d'avancement, tests, bugs connus, features à venir
 
 ---
 
-## Repo
+## Limitations connues
 
-Projet privé. Pas de push GitHub.
+| # | Description | Statut |
+|---|---|---|
+| BUG-05 | Sous-titres SRT/ASS non affichés (soft-sub WebVTT) | 🔴 P1 |
+| BUG-06 | PGS brûlés en hard-sub (non désactivable) | 🟡 Limitation Jellyfin |
