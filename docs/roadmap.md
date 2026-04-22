@@ -18,24 +18,36 @@
 | 4b — Compat Jellyfin 10.11 + .NET 9 | ✅ | 0.1.0.12 |
 | 4c — HTTPS X-Forwarded-Proto + images natives | ✅ | 0.1.0.13 |
 | 4d — Codec info NFO + seeking + pistes audio/sous-titres | ✅ | 0.1.0.14 |
-| 5 — UI settings refonte | 🔜 | — |
-| 6 — Gestion bibliothèques par peer | 🔜 | — |
-| 7 — Peer-of-peer discovery | 🔜 | — |
-| 8 — Multi-source / IMediaSourceProvider | 🔜 | — |
-| 9 — Distribution publique | 🔜 | — |
+| 5a — Versioning config + manifest | 🔜 | 0.1.0.15 |
+| 5b — Versioning API `/JellyFed/v1/` | 🔜 | 0.1.0.16 |
+| 5c — Layout per-peer (`LibraryLayout`) | 🔜 | 0.1.0.17 |
+| 5d — Multi-source (`sources.json` + `IMediaSourceProvider`) | 🔜 | 0.1.0.18 |
+| 5e — Tag `<studio>` peer dans NFO + fix SRT soft-sub | 🔜 | 0.1.0.19 |
+| 5f — Tests d'intégration + hardening | 🔜 | 0.1.0.20 |
+| **v1.0.0 — Release stable (architecture figée)** | 🎯 | **1.0.0** |
+| 6 — UI settings refonte | Post-v1 | v1.1 |
+| 7 — Peer-of-peer discovery (FEAT-03) | Post-v1 | v1.2 |
+| 8 — Recall + suppression propagée (FEAT-04/05) | Post-v1 | v1.3 |
+| 9 — Distribution publique | Post-v1 | v1.x |
+
+Le plan détaillé de la v1 (contrats à figer, motivations, critères de validation) est dans [`v1-scope.md`](v1-scope.md).
 
 ---
 
 ## Priorités
 
+**Objectif v1 : figer l'architecture.** Toutes les features listées dans la phase 5 modifient des contrats publics (layout, schémas, API) et doivent être implémentées avant v1 pour que les versions suivantes soient upgradables sans reset.
+
 ```
-P1  Bugs critiques (SRT subtitles, stream edge cases)
-P2  UI settings refonte
-P3  Gestion bibliothèques par peer (FEAT-07)
-P4  Peer-of-peer discovery / gossip (FEAT-03) — désactivé par défaut
-P5  Multi-source (FEAT-08)
-P6  Distribution publique
+P1  Versioning config + manifest (v0.1.0.15)          — prérequis migrations
+P2  Versioning API /JellyFed/v1/ (v0.1.0.16)          — prérequis coexistence v1/v2
+P3  Layout per-peer (v0.1.0.17)                       — choix immuable après 1re sync
+P4  Multi-source sources.json (v0.1.0.18)             — nouveau fichier par item
+P5  Tag <studio> peer + fix SRT BUG-05 (v0.1.0.19)    — format NFO final
+P6  Tests d'intégration + hardening (v0.1.0.20)       — validation migrations
 ```
+
+Post-v1 (non-breaking, safe à ajouter en v1.x) : UI refonte, peer-of-peer discovery, recall, suppression propagée, distribution publique.
 
 ---
 
