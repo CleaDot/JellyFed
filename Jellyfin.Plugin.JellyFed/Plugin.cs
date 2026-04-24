@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using Jellyfin.Plugin.JellyFed.Configuration;
 using Jellyfin.Plugin.JellyFed.Sync;
 using MediaBrowser.Common.Configuration;
@@ -49,6 +50,11 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
         if (!string.IsNullOrWhiteSpace(Configuration.LibraryPath))
         {
             _ = ManifestStore.Load(Configuration.LibraryPath);
+        }
+
+        if (Configuration.Peers.Any(PeerIdentity.EnsurePeerId))
+        {
+            needsSave = true;
         }
 
         if (needsSave)

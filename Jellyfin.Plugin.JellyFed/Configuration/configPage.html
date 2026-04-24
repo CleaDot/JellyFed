@@ -47,6 +47,17 @@
                     .jf-readme-section pre { background:#111; border:1px solid #333; border-radius:4px; padding:1em; overflow:auto; font-size:.85em; line-height:1.4; }
                     .jf-readme-section ol { padding-left:1.5em; line-height:1.8; }
                     .jf-readme-section code { background:#1a1a1a; padding:.1em .4em; border-radius:3px; }
+                    .jf-log-summary { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:.75em; margin-bottom:1em; }
+                    .jf-log-card { border:1px solid #333; border-radius:6px; padding:.85em; background:rgba(255,255,255,.02); }
+                    .jf-log-card strong { display:block; font-size:1.35em; color:#fff; }
+                    .jf-log-feed { display:flex; flex-direction:column; gap:.75em; }
+                    .jf-log-entry { border:1px solid #333; border-radius:6px; padding:.85em 1em; background:rgba(255,255,255,.02); }
+                    .jf-log-entry-head { display:flex; gap:.5em; flex-wrap:wrap; align-items:center; margin-bottom:.35em; }
+                    .jf-log-entry-meta { color:#aaa; font-size:.82em; }
+                    .jf-log-entry pre { margin:.6em 0 0; padding:.75em; border-radius:4px; background:#111; color:#bbb; font-size:.8em; overflow:auto; }
+                    .jf-sev-info { color:#9bc9ff; }
+                    .jf-sev-warning { color:#f0c674; }
+                    .jf-sev-error { color:#e07070; }
                 </style>
 
                 <div class="sectionTitleContainer flex align-items-center">
@@ -57,6 +68,7 @@
                     <button type="button" class="jf-tab active" data-tab="readme">Readme</button>
                     <button type="button" class="jf-tab" data-tab="settings">Settings</button>
                     <button type="button" class="jf-tab" data-tab="peers">Peers</button>
+                    <button type="button" class="jf-tab" data-tab="logs">Logs</button>
                     <button type="button" class="jf-tab" data-tab="danger">Danger Zone</button>
                 </div>
 
@@ -314,6 +326,54 @@
                         <span id="blockedStatus" style="color:#aaa;font-size:.9em;margin-left:.75em;"></span>
                     </div>
 
+                    <div class="jf-peer-section" style="margin-top:2em;">
+                        <div class="sectionTitleContainer">
+                            <h2 class="sectionTitle">Multi-source selector</h2>
+                        </div>
+                        <div class="fieldDescription" style="margin-bottom:1em;">
+                            Federated items that currently exist on multiple peers. Pick a different primary source to rewrite local playback toward that peer.
+                        </div>
+                        <div style="display:flex;gap:.75em;flex-wrap:wrap;align-items:center;margin-bottom:1em;">
+                            <input type="text" id="sourceSearchInput" class="emby-input" placeholder="Search title, key or peer" style="min-width:18rem;flex:1;" />
+                            <button type="button" id="refreshSourcesBtn" class="emby-button raised"><span>Refresh sources</span></button>
+                            <span id="sourcesStatus" style="color:#aaa;font-size:.9em;"></span>
+                        </div>
+                        <div id="multiSourceContainer"></div>
+                        <p id="multiSourceEmpty" style="display:none;color:#888;">No multi-source items right now.</p>
+                    </div>
+
+                </section>
+
+                <!-- ══════════════ Logs tab ══════════════ -->
+                <section class="jf-tab-panel" data-panel="logs">
+
+                    <div style="display:flex;align-items:center;gap:.75em;flex-wrap:wrap;margin-bottom:1em;">
+                        <select id="logsScopeSelect" class="emby-select">
+                            <option value="all">All logs</option>
+                            <option value="security">Security logs</option>
+                            <option value="peer-connections">Peer connection logs</option>
+                            <option value="peer-access">Peer access history</option>
+                        </select>
+                        <select id="logsPeerSelect" class="emby-select">
+                            <option value="">All peers</option>
+                        </select>
+                        <button type="button" id="refreshLogsBtn" class="emby-button raised">
+                            <span>Refresh</span>
+                        </button>
+                        <span id="logsStatus" style="color:#aaa;font-size:.9em;">Admin-only audit feed.</span>
+                    </div>
+
+                    <div id="logsSummary" class="jf-log-summary"></div>
+
+                    <div id="logsFeed" class="jf-log-feed"></div>
+                    <p id="logsEmpty" style="display:none;color:#888;">No audit records yet.</p>
+
+                    <div style="margin-top:1em;">
+                        <button type="button" id="loadMoreLogsBtn" class="emby-button raised" style="display:none;">
+                            <span>Load more</span>
+                        </button>
+                    </div>
+
                 </section>
 
                 <!-- ══════════════ Danger Zone tab ══════════════ -->
@@ -375,6 +435,7 @@
                 var pluginId = 'ff0164d7-e8c0-44c1-bc61-45017125a155';
                 var config = {};
                 var peerDetailsCache = [];
+                var logsState = { scope: 'all', peerId: '', beforeId: null, hasMore: false, items: [] };
 
                 // Base-path aware fetch helper (supports Jellyfin behind a reverse proxy with sub-path).
                 var _basePath = window.location.pathname.split('/web/')[0].replace(/\/$/, '');
@@ -515,6 +576,8 @@
                     });
                     if (tabId === 'peers') {
                         loadPeerDetails(page);
+                    } else if (tabId === 'logs') {
+                        refreshLogs(page);
                     }
                 }
 
@@ -542,6 +605,7 @@
                         console.log('[JellyFed] peers/details —', peerDetailsCache.length + ' peer(s); lastGlobalSyncAt=', lastGlobal);
                         renderPeerDetails(page, peerDetailsCache, discoveredPeers, lastGlobal, selfDiscoverable);
                         loadBlocked(page);
+                        loadMultiSourceItems(page);
                     }).catch(function (err) {
                         console.error('[JellyFed] peers/details — error:', err);
                         page.querySelector('#peersHeaderStatus').textContent = 'Error: ' + err.message;
@@ -860,6 +924,104 @@
                     }).catch(function () { status.textContent = 'Error.'; });
                 }
 
+                function setSourcesStatus(page, text, color) {
+                    var el = page.querySelector('#sourcesStatus');
+                    if (!el) { return; }
+                    el.textContent = text || '';
+                    el.style.color = color || '#aaa';
+                }
+
+                function loadMultiSourceItems(page) {
+                    var search = (page.querySelector('#sourceSearchInput').value || '').trim();
+                    setSourcesStatus(page, 'Loading multi-source items…');
+                    return fetch(jellyFedUrl('/JellyFed/v1/admin/sources?limit=100' + (search ? '&search=' + encodeURIComponent(search) : '')), {
+                        method: 'GET',
+                        headers: authHeaders(false)
+                    }).then(function (r) {
+                        if (!r.ok) { throw new Error('HTTP ' + r.status); }
+                        return r.json();
+                    }).then(function (data) {
+                        renderMultiSourceItems(page, (data && data.items) || []);
+                    }).catch(function (err) {
+                        setSourcesStatus(page, 'Error: ' + err.message, '#e07070');
+                    });
+                }
+
+                function renderMultiSourceItems(page, items) {
+                    var container = page.querySelector('#multiSourceContainer');
+                    var empty = page.querySelector('#multiSourceEmpty');
+                    container.innerHTML = '';
+
+                    if (!items || items.length === 0) {
+                        empty.style.display = 'block';
+                        setSourcesStatus(page, 'No multi-source items found.');
+                        return;
+                    }
+
+                    empty.style.display = 'none';
+                    setSourcesStatus(page, items.length + ' multi-source item(s)');
+
+                    items.forEach(function (item) {
+                        var card = document.createElement('div');
+                        card.className = 'jf-peer-card';
+                        card.innerHTML =
+                            '<div class="jf-peer-head">' +
+                                '<span class="jf-peer-name">' + escHtml(item.title || item.itemKey) + '</span>' +
+                                '<span class="jf-badge">' + escHtml(item.itemType || 'Item') + '</span>' +
+                                '<span class="jf-badge">primary: ' + escHtml(item.primaryPeerName || 'unknown') + '</span>' +
+                            '</div>' +
+                            '<div class="jf-peer-meta"><code>' + escHtml(item.itemKey || '') + '</code></div>' +
+                            '<div class="jf-peer-actions" style="flex-wrap:wrap;"></div>';
+
+                        var actions = card.querySelector('.jf-peer-actions');
+                        (item.sources || []).forEach(function (source) {
+                            var btn = document.createElement('button');
+                            btn.type = 'button';
+                            btn.className = 'emby-button raised';
+                            var label = source.peerName || 'unknown';
+                            if (source.width && source.height) {
+                                label += ' · ' + source.width + 'x' + source.height;
+                            }
+                            if (item.primaryPeerName && source.peerName === item.primaryPeerName) {
+                                btn.disabled = true;
+                                label += ' · active';
+                            }
+                            btn.innerHTML = '<span>' + escHtml(label) + '</span>';
+                            btn.addEventListener('click', function () {
+                                selectPrimarySource(page, item, source.peerName, btn);
+                            });
+                            actions.appendChild(btn);
+                        });
+
+                        container.appendChild(card);
+                    });
+                }
+
+                function selectPrimarySource(page, item, peerName, btn) {
+                    btn.disabled = true;
+                    var span = btn.querySelector('span');
+                    var old = span.textContent;
+                    span.textContent = 'Switching…';
+                    fetch(jellyFedUrl('/JellyFed/v1/admin/sources/select'), {
+                        method: 'POST',
+                        headers: authHeaders(true),
+                        body: JSON.stringify({ ItemType: item.itemType, ItemKey: item.itemKey, PeerName: peerName })
+                    }).then(function (r) {
+                        if (!r.ok) {
+                            return readErrorMessage(r).then(function (msg) { throw new Error(msg); });
+                        }
+                        return r.json();
+                    }).then(function () {
+                        setSourcesStatus(page, 'Primary source updated for ' + (item.title || item.itemKey) + '.', '#52b788');
+                        loadMultiSourceItems(page);
+                        loadPeerDetails(page);
+                    }).catch(function (err) {
+                        btn.disabled = false;
+                        span.textContent = old;
+                        setSourcesStatus(page, 'Error: ' + err.message, '#e07070');
+                    });
+                }
+
                 // ── Add peer modal ────────────────────────────────────────────
                 function openAddPeer(page, seed) {
                     seed = seed || {};
@@ -965,6 +1127,168 @@
                     }).finally(function () {
                         addBtn.disabled = false;
                         addBtn.querySelector('span').textContent = 'Add';
+                    });
+                }
+
+                // ── Logs tab ────────────────────────────────────────────────
+                function setLogsStatus(page, text, color) {
+                    var el = page.querySelector('#logsStatus');
+                    el.style.color = color || '#aaa';
+                    el.textContent = text || '';
+                }
+
+                function normalizeLogEntry(raw) {
+                    return {
+                        id: pick(raw, 'id'),
+                        createdAt: pick(raw, 'createdAt'),
+                        category: pick(raw, 'category') || 'general',
+                        eventType: pick(raw, 'eventType') || 'event',
+                        severity: pick(raw, 'severity') || 'info',
+                        message: pick(raw, 'message') || '',
+                        peerId: pick(raw, 'peerId'),
+                        peerName: pick(raw, 'peerName'),
+                        peerUrl: pick(raw, 'peerUrl'),
+                        actorType: pick(raw, 'actorType'),
+                        authMode: pick(raw, 'authMode'),
+                        method: pick(raw, 'method'),
+                        path: pick(raw, 'path'),
+                        statusCode: pick(raw, 'statusCode'),
+                        remoteIp: pick(raw, 'remoteIp'),
+                        detailsJson: pick(raw, 'detailsJson')
+                    };
+                }
+
+                function normalizeLogOverview(raw) {
+                    return {
+                        totalCount: pick(raw, 'totalCount') || 0,
+                        securityCount: pick(raw, 'securityCount') || 0,
+                        peerConnectionCount: pick(raw, 'peerConnectionCount') || 0,
+                        peerAccessCount: pick(raw, 'peerAccessCount') || 0,
+                        last24HoursCount: pick(raw, 'last24HoursCount') || 0,
+                        lastEventAt: pick(raw, 'lastEventAt'),
+                        peers: (pick(raw, 'peers') || []).map(function (peer) {
+                            return {
+                                peerId: pick(peer, 'peerId') || '',
+                                name: pick(peer, 'name') || '(unknown peer)',
+                                url: pick(peer, 'url') || ''
+                            };
+                        })
+                    };
+                }
+
+                function renderLogsOverview(page, overview) {
+                    var container = page.querySelector('#logsSummary');
+                    container.innerHTML = [
+                        { label: 'Total', value: overview.totalCount },
+                        { label: 'Security', value: overview.securityCount },
+                        { label: 'Peer connections', value: overview.peerConnectionCount },
+                        { label: 'Peer access', value: overview.peerAccessCount },
+                        { label: 'Last 24h', value: overview.last24HoursCount },
+                        { label: 'Last event', value: overview.lastEventAt ? formatRelative(overview.lastEventAt) : 'never' }
+                    ].map(function (card) {
+                        return '<div class="jf-log-card"><div>' + escHtml(card.label) + '</div><strong>' + escHtml(card.value) + '</strong></div>';
+                    }).join('');
+
+                    var peerSelect = page.querySelector('#logsPeerSelect');
+                    var current = peerSelect.value;
+                    peerSelect.innerHTML = '<option value="">All peers</option>' + overview.peers.map(function (peer) {
+                        var label = peer.url ? (peer.name + ' · ' + peer.url) : peer.name;
+                        return '<option value="' + escHtml(peer.peerId) + '">' + escHtml(label) + '</option>';
+                    }).join('');
+                    peerSelect.value = current || logsState.peerId || '';
+                }
+
+                function renderLogsFeed(page, append) {
+                    var feed = page.querySelector('#logsFeed');
+                    var empty = page.querySelector('#logsEmpty');
+                    if (!append) {
+                        feed.innerHTML = '';
+                    }
+
+                    if (!logsState.items.length) {
+                        empty.style.display = 'block';
+                        page.querySelector('#loadMoreLogsBtn').style.display = 'none';
+                        return;
+                    }
+
+                    empty.style.display = 'none';
+                    var html = logsState.items.map(function (entry) {
+                        var meta = [
+                            entry.createdAt ? new Date(entry.createdAt).toLocaleString() : 'unknown time',
+                            entry.peerName ? ('peer ' + entry.peerName) : null,
+                            entry.authMode ? ('auth ' + entry.authMode) : null,
+                            entry.method && entry.path ? (entry.method + ' ' + entry.path) : entry.path,
+                            entry.statusCode ? ('HTTP ' + entry.statusCode) : null,
+                            entry.remoteIp ? ('ip ' + entry.remoteIp) : null
+                        ].filter(Boolean).join(' · ');
+                        var details = entry.detailsJson ? '<pre>' + escHtml(entry.detailsJson) + '</pre>' : '';
+                        return '<div class="jf-log-entry">' +
+                            '<div class="jf-log-entry-head">' +
+                                '<span class="jf-badge">' + escHtml(entry.category) + '</span>' +
+                                '<span class="jf-badge jf-sev-' + escHtml(entry.severity) + '">' + escHtml(entry.severity) + '</span>' +
+                                '<span class="jf-badge">' + escHtml(entry.eventType) + '</span>' +
+                            '</div>' +
+                            '<div>' + escHtml(entry.message) + '</div>' +
+                            '<div class="jf-log-entry-meta">' + escHtml(meta) + '</div>' +
+                            details +
+                        '</div>';
+                    }).join('');
+
+                    feed.innerHTML = html;
+                    page.querySelector('#loadMoreLogsBtn').style.display = logsState.hasMore ? 'inline-block' : 'none';
+                }
+
+                function loadLogsOverview(page) {
+                    return adminFetch('/JellyFed/logs/overview').then(function (r) {
+                        if (!r.ok) { return readErrorMessage(r).then(function (m) { throw new Error(m); }); }
+                        return r.json();
+                    }).then(function (raw) {
+                        var overview = normalizeLogOverview(raw);
+                        renderLogsOverview(page, overview);
+                        return overview;
+                    });
+                }
+
+                function loadLogsFeed(page, append) {
+                    var qs = new URLSearchParams();
+                    qs.set('scope', logsState.scope || 'all');
+                    if (logsState.peerId) { qs.set('peerId', logsState.peerId); }
+                    qs.set('limit', '100');
+                    if (append && logsState.beforeId) { qs.set('beforeId', String(logsState.beforeId)); }
+                    return adminFetch('/JellyFed/logs/feed?' + qs.toString()).then(function (r) {
+                        if (!r.ok) { return readErrorMessage(r).then(function (m) { throw new Error(m); }); }
+                        return r.json();
+                    }).then(function (raw) {
+                        var items = (pick(raw, 'items') || []).map(normalizeLogEntry);
+                        logsState.items = append ? logsState.items.concat(items) : items;
+                        logsState.hasMore = !!pick(raw, 'hasMore');
+                        logsState.beforeId = pick(raw, 'nextBeforeId') || null;
+                        renderLogsFeed(page, append);
+                        setLogsStatus(page, logsState.items.length + ' audit event(s)' + (logsState.hasMore ? ' loaded…' : ''), '#aaa');
+                    });
+                }
+
+                function refreshLogs(page) {
+                    logsState.scope = page.querySelector('#logsScopeSelect').value || 'all';
+                    logsState.peerId = page.querySelector('#logsPeerSelect').value || '';
+                    logsState.beforeId = null;
+                    logsState.hasMore = false;
+                    logsState.items = [];
+                    setLogsStatus(page, 'Loading audit feed…');
+                    return loadLogsOverview(page)
+                        .then(function () { return loadLogsFeed(page, false); })
+                        .catch(function (err) {
+                            console.error('[JellyFed] logs — error:', err);
+                            setLogsStatus(page, 'Error: ' + err.message, '#e07070');
+                        });
+                }
+
+                function loadMoreLogs(page) {
+                    if (!logsState.hasMore) { return; }
+                    setLogsStatus(page, 'Loading more audit events…');
+                    loadLogsFeed(page, true).catch(function (err) {
+                        console.error('[JellyFed] logs more — error:', err);
+                        setLogsStatus(page, 'Error: ' + err.message, '#e07070');
                     });
                 }
 
@@ -1195,6 +1519,26 @@
                 });
 
                 page.querySelector('#saveBlockedBtn').addEventListener('click', function () { saveBlocked(page); });
+                page.querySelector('#refreshSourcesBtn').addEventListener('click', function () { loadMultiSourceItems(page); });
+                page.querySelector('#sourceSearchInput').addEventListener('keydown', function (e) {
+                    if (e.key === 'Enter') {
+                        e.preventDefault();
+                        loadMultiSourceItems(page);
+                    }
+                });
+
+                page.querySelector('#refreshLogsBtn').addEventListener('click', function () {
+                    refreshLogs(page);
+                });
+                page.querySelector('#logsScopeSelect').addEventListener('change', function () {
+                    refreshLogs(page);
+                });
+                page.querySelector('#logsPeerSelect').addEventListener('change', function () {
+                    refreshLogs(page);
+                });
+                page.querySelector('#loadMoreLogsBtn').addEventListener('click', function () {
+                    loadMoreLogs(page);
+                });
 
                 page.querySelector('#createLibrariesBtn').addEventListener('click', function () {
                     createQuickLibraries(page);

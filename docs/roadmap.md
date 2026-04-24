@@ -20,12 +20,13 @@
 | 4d — Codec info NFO + seeking + pistes audio/sous-titres | ✅ | 0.1.0.14 |
 | 4e — UI peers avancée + layout par peer + anime roots | ✅ | 0.1.0.15 |
 | 4f — Discovery/admin-control v1 (manual add only) | ✅ | 0.1.0.16 |
-| 5a — Versioning config + manifest | 🔜 | 0.1.0.16 |
-| 5b — Versioning API `/JellyFed/v1/` | 🔜 | 0.1.0.17 |
-| 5c — Migration legacy layout + gel du contrat disque | 🔜 | 0.1.0.18 |
+| 4g — Audit logs persistants + endpoints admin-only + attribution peer access | ✅ | 0.1.0.16 |
+| 5a — Versioning config + manifest | ✅ | 0.1.0.16 |
+| 5b — Versioning API `/JellyFed/v1/` | ✅ | 0.1.0.16 |
+| 5c — Migration legacy layout + gel du contrat disque | ✅ | 0.1.0.16 |
 | 5d — Multi-source provenance (`sources[]` + `sources.json`) | 🟡 slice landed, provider pending | feature/v1-sources |
-| 5e — Tag `<studio>` peer dans NFO + provenance tags | 🟡 partial | feature/v1-sources |
-| 5f — Tests d'intégration + hardening | 🔜 | 0.1.0.21 |
+| 5e — Tag `<studio>` peer dans NFO + fix SRT soft-sub | 🟡 partial | feature/v1-sources |
+| 5f — Tests d'intégration + hardening | 🔜 | 0.1.0.17 |
 | **v1.0.0 — Release stable (architecture figée)** | 🎯 | **1.0.0** |
 | 6 — UI settings refonte | Post-v1 | v1.1 |
 | 7 — Discovery étendue / gossip récursif (FEAT-03++) | Post-v1 | v1.2 |

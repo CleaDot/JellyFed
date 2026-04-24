@@ -53,9 +53,13 @@ la version de protocole, la version de schéma persisté et l'`instanceId` stabl
 
 ---
 
-### `GET /JellyFed/v1/stream/{itemId}?token={federationToken}`
+### `GET /JellyFed/v1/stream/{itemId}?token={token}`
+
+Alias legacy conservé : `GET /JellyFed/stream/{itemId}?token={token}`
 
 Sert ou redirige le flux vidéo d'un item. Utilisé par les fichiers `.strm` — les players ne peuvent pas envoyer de headers d'auth, d'où le token en query param.
+
+`{token}` vaut de préférence l'`AccessToken` per-peer quand le peer a terminé l'auto-registration ; sinon JellyFed retombe sur le `FederationToken` global. Cela permet d'attribuer l'historique d'accès au `PeerId` quand c'est possible.
 
 **Comportement :**
 - Si `JellyfinApiKey` configurée → `302` vers `/Videos/{itemId}/stream?api_key={key}&Static=true`
@@ -70,7 +74,9 @@ Sert ou redirige le flux vidéo d'un item. Utilisé par les fichiers `.strm` —
 
 ---
 
-### `GET /JellyFed/v1/image/{itemId}/{imageType}?token={federationToken}`
+### `GET /JellyFed/v1/image/{itemId}/{imageType}?token={token}`
+
+Alias legacy conservé : `GET /JellyFed/image/{itemId}/{imageType}?token={token}`
 
 Sert une image d'item (poster ou backdrop). Utilisé quand `JellyfinApiKey` n'est pas configurée.
 
@@ -82,7 +88,70 @@ Sert une image d'item (poster ou backdrop). Utilisé quand `JellyfinApiKey` n'es
 
 ---
 
+## Endpoints admin-only — audit logs
+
+Ces routes sont réservées à un utilisateur Jellyfin authentifié **administrateur** (token session Jellyfin, pas token de fédération).
+
+### `GET /JellyFed/logs/overview`
+
+Retourne les compteurs globaux de l'audit store et la liste des peers connus pour filtrage UI.
+
+**Réponse 200 :**
+```json
+{
+  "totalCount": 248,
+  "securityCount": 12,
+  "peerConnectionCount": 71,
+  "peerAccessCount": 165,
+  "last24HoursCount": 44,
+  "lastEventAt": "2026-04-24T18:05:12Z",
+  "peers": [
+    { "peerId": "6b5f...", "name": "instance-b", "url": "https://peer-b.example.com" }
+  ]
+}
+```
+
+### `GET /JellyFed/logs/feed?scope=all&peerId=...&limit=100&beforeId=...`
+
+Retourne le feed paginé des événements persistés.
+
+**Scopes supportés :**
+- `all`
+- `security`
+- `peer-connections`
+- `peer-access`
+
+**Réponse 200 :**
+```json
+{
+  "items": [
+    {
+      "id": 248,
+      "createdAt": "2026-04-24T18:05:12Z",
+      "category": "peer-access",
+      "eventType": "stream.redirected",
+      "severity": "info",
+      "message": "Accepted stream request for item abc123 and redirected through Jellyfin.",
+      "peerId": "6b5f...",
+      "peerName": "instance-b",
+      "authMode": "peer-access-token",
+      "method": "GET",
+      "path": "/JellyFed/stream/abc123",
+      "statusCode": 302,
+      "remoteIp": "203.0.113.10",
+      "detailsJson": "{\"mode\":\"jellyfin-redirect\"}"
+    }
+  ],
+  "hasMore": true,
+  "nextBeforeId": 147
+}
+```
+
+---
+
 ### `POST /JellyFed/v1/peer/register`
+
+Alias legacy conservé : `POST /JellyFed/peer/register`
 
 Handshake hérité pour échange optionnel d'un `AccessToken` per-peer.
 En v1, **cet endpoint ne crée plus de peer automatiquement** : un admin doit toujours ajouter le peer manuellement côté UI.

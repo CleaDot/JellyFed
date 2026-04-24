@@ -1,4 +1,5 @@
 using Jellyfin.Plugin.JellyFed.Api;
+using Jellyfin.Plugin.JellyFed.Audit;
 using Jellyfin.Plugin.JellyFed.Sync;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Plugins;
@@ -21,6 +22,10 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
                 c.DefaultRequestHeaders.UserAgent.ParseAdd("JellyFed/0.1");
             });
 
+        serviceCollection.AddSingleton<AuditLogStore>();
+        serviceCollection.AddSingleton<AuditLogService>();
+
+        serviceCollection.AddScoped<AdminAccessFilter>();
         serviceCollection.AddScoped<FederationAuthFilter>();
         serviceCollection.AddSingleton<PeerClient>();
         serviceCollection.AddScoped<StrmWriter>();

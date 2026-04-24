@@ -14,6 +14,7 @@ Jellyfin supporte nativement les fichiers `.strm` : un fichier texte contenant u
 {MetadataPath}/                    ← LibraryPath : manifest + états peers uniquement
   .jellyfed-manifest.json
   .jellyfed-peers.json
+  .jellyfed-audit.sqlite3          ← audit store persistant (SQLite)
 
 {MoviesRoot}/{PeerName}/          ← racine films (MoviesRootPath ou défaut MetadataPath/Films)
   Oppenheimer (2023)/
@@ -52,17 +53,24 @@ Jellyfin.Plugin.JellyFed/
                                    SelfUrl, SelfName, Discoverable, JellyfinApiKey,
                                    BlockedPeerUrls[], DiscoveredPeers[]
     SchemaMigrator.cs              Migration config + manifest vers le schéma courant
-    PeerConfiguration.cs           Un peer : Name, Url, FederationToken, DiscoveryToken,
+    PeerConfiguration.cs           Un peer : PeerId, Name, Url, FederationToken, DiscoveryToken,
                                    AccessToken, Enabled, SyncMovies, SyncSeries, SyncAnime
     DiscoveredPeerConfiguration.cs Suggestion admin-visible : Name, Url, FederationToken,
                                    SourcePeerName, HopCount, LastDiscoveredAt
-    configPage.html                Page admin Jellyfin (JS vanilla, 4 onglets :
-                                   Readme / Settings / Peers / Danger Zone)
+    configPage.html                Page admin Jellyfin (JS vanilla, 5 onglets :
+                                   Readme / Settings / Peers / Logs / Danger Zone)
+
+  Audit/
+    AuditLogStore.cs               Store SQLite + requêtes overview/feed
+    AuditLogService.cs             Attribution peer/token + helpers d'écriture
+    AuditLogEntry.cs               Schéma d'événement persisté
 
   Api/
     FederationController.cs        Endpoints /JellyFed/v1/* (catalog, stream, image, system/info, peers,
                                    peers/details, register, sync, peer/{name}/sync|purge|remove,
                                    PATCH peer/{name}, reset) + alias legacy /JellyFed/*
+    AuditLogsController.cs         Endpoints admin-only `/JellyFed/logs/*`
+    AdminAccessFilter.cs           Vérifie qu'un user Jellyfin admin appelle les routes logs
     FederationAuthFilter.cs        ServiceFilter : vérifie Bearer token de fédération
     Dto/
       CatalogItemDto.cs            Film ou série : métadonnées + codec + MediaStreams[]
@@ -225,6 +233,20 @@ Sans les infos codec dans le NFO : Jellyfin suppose direct-play → browser reç
 1. Bearer correspond à `AccessToken` d'un peer activé → OK (per-peer)
 2. Sinon, Bearer correspond au `FederationToken` global → OK (fallback bootstrap)
 3. Sinon → 401
+
+Quand l'`AccessToken` per-peer est connu, JellyFed réinjecte ce même token dans les `streamUrl` / `imageUrl` du catalogue exporté. Résultat : les accès stream/image deviennent eux aussi attribuables au `PeerId` stable du peer, au lieu d'être noyés derrière le token global.
+
+---
+
+## Audit / observabilité v1
+
+Le slice v1 ajoute un store d'audit persistant SQLite, local au plugin :
+
+- **catégories** : `security`, `peer-connection`, `peer-access`, `general`
+- **attribution** : `PeerId`, `PeerName`, `PeerUrl`, `AuthMode`, IP, méthode, route, code HTTP
+- **sources** : auth refusée, register, heartbeats online/offline, syncs, purge/remove/reset, catalog export, stream/image access
+
+Le store est exposé par des endpoints admin-only (`/JellyFed/logs/overview`, `/JellyFed/logs/feed`) et par l'onglet **Logs** de la page plugin.
 
 ---
 

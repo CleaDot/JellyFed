@@ -1,6 +1,8 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Plugin.JellyFed.Audit;
+using Jellyfin.Plugin.JellyFed.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -15,6 +17,7 @@ public class PeerHeartbeatService : IHostedService, IDisposable
     private const int HeartbeatIntervalMinutes = 5;
 
     private readonly PeerClient _peerClient;
+    private readonly AuditLogService _auditLogService;
     private readonly ILogger<PeerHeartbeatService> _logger;
     private Timer? _timer;
     private bool _disposed;
@@ -23,10 +26,12 @@ public class PeerHeartbeatService : IHostedService, IDisposable
     /// Initializes a new instance of the <see cref="PeerHeartbeatService"/> class.
     /// </summary>
     /// <param name="peerClient">Federation HTTP client with route-version fallback support.</param>
+    /// <param name="auditLogService">Audit service.</param>
     /// <param name="logger">Instance of the <see cref="ILogger{PeerHeartbeatService}"/> interface.</param>
-    public PeerHeartbeatService(PeerClient peerClient, ILogger<PeerHeartbeatService> logger)
+    public PeerHeartbeatService(PeerClient peerClient, AuditLogService auditLogService, ILogger<PeerHeartbeatService> logger)
     {
         _peerClient = peerClient;
+        _auditLogService = auditLogService;
         _logger = logger;
     }
 
@@ -100,6 +105,10 @@ public class PeerHeartbeatService : IHostedService, IDisposable
                 states[peer.Name] = status;
             }
 
+            PeerIdentity.EnsurePeerId(peer);
+            var wasOnline = status.Online;
+            var previousVersion = status.Version;
+
             try
             {
                 var info = await _peerClient
@@ -126,16 +135,42 @@ public class PeerHeartbeatService : IHostedService, IDisposable
                         peer.Name,
                         status.Version,
                         info.PreferredRoutePrefix);
+
+                    if (!wasOnline || !string.Equals(previousVersion, status.Version, StringComparison.Ordinal))
+                    {
+                        _auditLogService.WritePeerEvent(
+                            peer,
+                            "peer.heartbeat.online",
+                            $"Peer {peer.Name} is reachable.",
+                            details: new { version = status.Version, wasOnline, route = info.PreferredRoutePrefix, discoverable = status.Discoverable });
+                    }
                 }
                 else
                 {
                     status.MarkOffline();
+                    if (wasOnline)
+                    {
+                        _auditLogService.WritePeerEvent(
+                            peer,
+                            "peer.heartbeat.offline",
+                            $"Peer {peer.Name} is no longer reachable.",
+                            AuditLogSeverities.Warning);
+                    }
                 }
             }
             catch (Exception ex) when (ex is OperationCanceledException or TaskCanceledException)
             {
                 status.MarkOffline();
                 _logger.LogDebug("JellyFed heartbeat: {PeerName} unreachable — {Message}", peer.Name, ex.Message);
+                if (wasOnline)
+                {
+                    _auditLogService.WritePeerEvent(
+                        peer,
+                        "peer.heartbeat.offline",
+                        $"Peer {peer.Name} became unreachable.",
+                        AuditLogSeverities.Warning,
+                        new { error = ex.Message });
+                }
             }
 
             changed = true;

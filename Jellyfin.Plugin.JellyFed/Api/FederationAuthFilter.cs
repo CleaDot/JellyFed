@@ -1,4 +1,5 @@
 using System.Linq;
+using Jellyfin.Plugin.JellyFed.Audit;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
 
@@ -8,15 +9,31 @@ namespace Jellyfin.Plugin.JellyFed.Api;
 /// Action filter that validates the federation Bearer token.
 /// Apply to any endpoint that should only be accessible to registered peers.
 /// </summary>
-public sealed class FederationAuthFilter : ActionFilterAttribute
+public sealed class FederationAuthFilter : IActionFilter
 {
+    private readonly AuditLogService _auditLogService;
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="FederationAuthFilter"/> class.
+    /// </summary>
+    /// <param name="auditLogService">Audit service.</param>
+    public FederationAuthFilter(AuditLogService auditLogService)
+    {
+        _auditLogService = auditLogService;
+    }
+
     /// <inheritdoc />
-    public override void OnActionExecuting(ActionExecutingContext context)
+    public void OnActionExecuting(ActionExecutingContext context)
     {
         var config = Plugin.Instance?.Configuration;
 
         if (config is null || string.IsNullOrWhiteSpace(config.FederationToken))
         {
+            _auditLogService.WriteSecurityEvent(
+                "auth.unavailable",
+                "Federation request rejected because the local federation token is not configured.",
+                context.HttpContext,
+                AuditLogSeverities.Error);
             context.Result = new ObjectResult("Federation token not configured on this instance.")
             {
                 StatusCode = 503
@@ -28,29 +45,33 @@ public sealed class FederationAuthFilter : ActionFilterAttribute
 
         if (!authHeader.StartsWith("Bearer ", System.StringComparison.OrdinalIgnoreCase))
         {
+            _auditLogService.WriteSecurityEvent(
+                "auth.missing-bearer",
+                "Federation request rejected because no Bearer token was provided.",
+                context.HttpContext);
             context.Result = new UnauthorizedObjectResult("Bearer token required.");
             return;
         }
 
         var token = authHeader["Bearer ".Length..].Trim();
 
-        // Primary check: per-peer access tokens (revocable when peer is removed).
-        // A peer that completed the optional per-peer token exchange uses the token issued specifically to it.
-        var validPerPeer = config.Peers.Any(p =>
-            p.Enabled &&
-            !string.IsNullOrEmpty(p.AccessToken) &&
-            string.Equals(token, p.AccessToken, System.StringComparison.Ordinal));
-
-        if (validPerPeer)
+        var identity = _auditLogService.ResolveFederationToken(token);
+        if (identity is not null)
         {
+            FederationRequestIdentityAccessor.Set(context.HttpContext, identity);
             return;
         }
 
-        // Fallback: global federation token, for peers that haven't completed
-        // received a per-peer token yet (manual setup or first contact).
-        if (!string.Equals(token, config.FederationToken, System.StringComparison.Ordinal))
-        {
-            context.Result = new UnauthorizedObjectResult("Invalid federation token.");
-        }
+        _auditLogService.WriteSecurityEvent(
+            "auth.invalid-token",
+            "Federation request rejected because the presented token was invalid.",
+            context.HttpContext,
+            details: new { providedTokenPrefix = token.Length >= 8 ? token[..8] : token });
+        context.Result = new UnauthorizedObjectResult("Invalid federation token.");
+    }
+
+    /// <inheritdoc />
+    public void OnActionExecuted(ActionExecutedContext context)
+    {
     }
 }

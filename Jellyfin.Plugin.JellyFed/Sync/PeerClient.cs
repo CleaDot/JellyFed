@@ -8,6 +8,7 @@ using System.Net.Http.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.JellyFed.Api.Dto;
+using Jellyfin.Plugin.JellyFed.Audit;
 using Jellyfin.Plugin.JellyFed.Configuration;
 using Microsoft.Extensions.Logging;
 
@@ -19,16 +20,19 @@ namespace Jellyfin.Plugin.JellyFed.Sync;
 public class PeerClient
 {
     private readonly HttpClient _http;
+    private readonly AuditLogService _auditLogService;
     private readonly ILogger<PeerClient> _logger;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="PeerClient"/> class.
     /// </summary>
     /// <param name="httpClientFactory">Instance of <see cref="IHttpClientFactory"/>.</param>
+    /// <param name="auditLogService">Audit service.</param>
     /// <param name="logger">Instance of the <see cref="ILogger{PeerClient}"/> interface.</param>
-    public PeerClient(IHttpClientFactory httpClientFactory, ILogger<PeerClient> logger)
+    public PeerClient(IHttpClientFactory httpClientFactory, AuditLogService auditLogService, ILogger<PeerClient> logger)
     {
         _http = httpClientFactory.CreateClient("JellyFed");
+        _auditLogService = auditLogService;
         _logger = logger;
     }
 
@@ -50,16 +54,36 @@ public class PeerClient
             suffix += $"?since={Uri.EscapeDataString(since.Value.ToString("O"))}";
         }
 
+        var url = BuildUrl(peer.Url, FederationProtocol.ToV1Path(suffix));
+
         try
         {
-            return await GetJsonWithRouteFallbackAsync<CatalogResponseDto>(
+            var result = await GetJsonWithRouteFallbackAsync<CatalogResponseDto>(
                 peer.Url,
                 peer.FederationToken,
                 suffix,
                 cancellationToken).ConfigureAwait(false);
+
+            if (result is null)
+            {
+                _auditLogService.WritePeerEvent(
+                    peer,
+                    "peer.catalog-fetch.failed",
+                    $"Catalog fetch failed for {peer.Name}.",
+                    AuditLogSeverities.Warning,
+                    new { url });
+            }
+
+            return result;
         }
         catch (Exception ex)
         {
+            _auditLogService.WritePeerEvent(
+                peer,
+                "peer.catalog-fetch.exception",
+                $"Catalog fetch failed for {peer.Name}: {ex.Message}",
+                AuditLogSeverities.Warning,
+                new { url, error = ex.Message });
             _logger.LogError(ex, "Failed to fetch catalog from peer {PeerName} ({Url})", peer.Name, peer.Url);
             return null;
         }
@@ -77,16 +101,37 @@ public class PeerClient
         string seriesId,
         CancellationToken cancellationToken)
     {
+        var suffix = $"/catalog/series/{seriesId}/seasons";
+        var url = BuildUrl(peer.Url, FederationProtocol.ToV1Path(suffix));
+
         try
         {
-            return await GetJsonWithRouteFallbackAsync<SeasonsResponseDto>(
+            var result = await GetJsonWithRouteFallbackAsync<SeasonsResponseDto>(
                 peer.Url,
                 peer.FederationToken,
-                $"/catalog/series/{seriesId}/seasons",
+                suffix,
                 cancellationToken).ConfigureAwait(false);
+
+            if (result is null)
+            {
+                _auditLogService.WritePeerEvent(
+                    peer,
+                    "peer.seasons-fetch.failed",
+                    $"Season fetch failed for {peer.Name} / series {seriesId}.",
+                    AuditLogSeverities.Warning,
+                    new { url, seriesId });
+            }
+
+            return result;
         }
         catch (Exception ex)
         {
+            _auditLogService.WritePeerEvent(
+                peer,
+                "peer.seasons-fetch.exception",
+                $"Season fetch failed for {peer.Name}: {ex.Message}",
+                AuditLogSeverities.Warning,
+                new { url, seriesId, error = ex.Message });
             _logger.LogError(ex, "Failed to fetch seasons for series {SeriesId} from {PeerName}", seriesId, peer.Name);
             return null;
         }
@@ -186,7 +231,7 @@ public class PeerClient
         PeerConfiguration peer,
         CancellationToken cancellationToken)
     {
-        var url = BuildUrl(peer, "/JellyFed/discovery");
+        var url = BuildUrl(peer.Url, FederationProtocol.ToV1Path("/discovery"));
 
         try
         {
@@ -252,6 +297,9 @@ public class PeerClient
         string selfToken,
         CancellationToken cancellationToken)
     {
+        PeerIdentity.EnsurePeerId(peer);
+        var url = BuildUrl(peer.Url, FederationProtocol.ToV1Path("/peer/register"));
+
         try
         {
             var payload = new RegisterPeerRequestDto
@@ -303,10 +351,21 @@ public class PeerClient
                 _logger.LogInformation(
                     "JellyFed: stored per-peer access token from {PeerName} — future API calls use revocable token.",
                     peer.Name);
+                _auditLogService.WritePeerEvent(
+                    localPeer,
+                    "peer.access-token-received",
+                    $"Stored a revocable access token issued by {peer.Name}.",
+                    details: new { peer.Url });
             }
         }
         catch (Exception ex)
         {
+            _auditLogService.WritePeerEvent(
+                peer,
+                "peer.registration-outbound.exception",
+                $"Could not auto-register on peer {peer.Name}: {ex.Message}",
+                AuditLogSeverities.Warning,
+                new { url, error = ex.Message });
             _logger.LogDebug(ex, "JellyFed: could not register on peer {PeerName} (non-fatal)", peer.Name);
         }
     }

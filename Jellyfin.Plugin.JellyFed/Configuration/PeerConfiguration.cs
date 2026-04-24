@@ -6,6 +6,11 @@ namespace Jellyfin.Plugin.JellyFed.Configuration;
 public class PeerConfiguration
 {
     /// <summary>
+    /// Gets or sets the stable JellyFed peer identifier.
+    /// </summary>
+    public string PeerId { get; set; } = string.Empty;
+
+    /// <summary>
     /// Gets or sets the display name for this peer.
     /// </summary>
     public string Name { get; set; } = string.Empty;

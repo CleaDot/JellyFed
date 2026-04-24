@@ -60,14 +60,18 @@ Instance A installe JellyFed. Elle se connecte à l'Instance B. Le plugin synchr
 ### Sécurité
 - Token de fédération auto-généré au démarrage (non éditable)
 - `InstanceId` stable auto-généré côté config pour les handshakes / diagnostics inter-peers
+- Store d'audit persistant SQLite (`.jellyfed-audit.sqlite3`) pour sécurité, accès peer et événements de connexion
+- Endpoints admin-only sous `/JellyFed/logs/*` + onglet **Logs** (all / security / peer connections / peer access history)
+- Attribution des accès par `PeerId` stable quand un peer utilise son `AccessToken` dédié (fallback global token conservé pour le bootstrap)
 - Clé API Jellyfin optionnelle (`JellyfinApiKey`) — reste côté serveur, jamais dans les `.strm`
 - Bouton "Reset Network" : nouveau token + suppression de tous les peers et `.strm`
 - `X-Forwarded-Proto` respecté derrière un reverse proxy
 
 ### UI admin
-- Page avec 4 onglets : **Readme** (intro + setup, ouvert par défaut), **Settings** (globaux), **Peers** (liste + actions), **Danger Zone** (reset network)
+- Page avec 5 onglets : **Readme** (intro + setup, ouvert par défaut), **Settings** (globaux), **Peers** (liste + actions), **Logs** (audit), **Danger Zone** (reset network)
 - Token de fédération en lecture seule avec bouton Copy
 - Blocked Peers déplacés dans l'onglet Peers (unblock + save)
+- Onglet Logs : vue admin des événements persistés, filtres par scope et peer, pagination
 - Reset Network isolé dans son propre onglet pour éviter les clics accidentels
 
 ---

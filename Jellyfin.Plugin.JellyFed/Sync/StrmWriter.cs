@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -140,6 +141,7 @@ public class StrmWriter
     /// <param name="itemKey">Logical manifest key.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>A <see cref="Task"/> representing the asynchronous operation.</returns>
+    [SuppressMessage("Security", "CA3003:Review code for file path injection vulnerabilities", Justification = "folderPath comes from persisted manifest data owned by JellyFed.")]
     public async Task RewriteMovieStreamAsync(
         string folderPath,
         ManifestEntry entry,
@@ -255,6 +257,7 @@ public class StrmWriter
     /// <param name="itemKey">Logical manifest key.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>A <see cref="Task"/> representing the asynchronous operation.</returns>
+    [SuppressMessage("Security", "CA3003:Review code for file path injection vulnerabilities", Justification = "folderPath comes from persisted manifest data owned by JellyFed.")]
     public async Task RewriteSeriesEpisodeStreamsAsync(
         string folderPath,
         SeasonsResponseDto seasons,
@@ -380,6 +383,7 @@ public class StrmWriter
         await WriteSourcesFileAsync(folderPath, entry, itemKey, "Series", cancellationToken).ConfigureAwait(false);
     }
 
+    [SuppressMessage("Security", "CA3003:Review code for file path injection vulnerabilities", Justification = "folderPath comes from persisted manifest data owned by JellyFed.")]
     private async Task WriteSourcesFileAsync(
         string folderPath,
         ManifestEntry entry,
@@ -407,6 +411,7 @@ public class StrmWriter
             .ConfigureAwait(false);
     }
 
+    [SuppressMessage("Security", "CA3003:Review code for file path injection vulnerabilities", Justification = "nfoPath comes from persisted manifest data owned by JellyFed.")]
     private async Task RewriteNfoProvenanceAsync(
         string nfoPath,
         ManifestEntry entry,

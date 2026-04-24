@@ -9,6 +9,7 @@ using System.Threading.Tasks;
 using Jellyfin.Data.Enums;
 using Jellyfin.Database.Implementations.Enums;
 using Jellyfin.Plugin.JellyFed.Api.Dto;
+using Jellyfin.Plugin.JellyFed.Audit;
 using Jellyfin.Plugin.JellyFed.Configuration;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
@@ -33,6 +34,7 @@ public class FederationSyncTask : IScheduledTask
     private readonly ILibraryManager _libraryManager;
     private readonly PeerClient _peerClient;
     private readonly StrmWriter _strmWriter;
+    private readonly AuditLogService _auditLogService;
     private readonly ILogger<FederationSyncTask> _logger;
 
     /// <summary>
@@ -41,16 +43,19 @@ public class FederationSyncTask : IScheduledTask
     /// <param name="libraryManager">Jellyfin library manager.</param>
     /// <param name="peerClient">HTTP client for remote JellyFed peers.</param>
     /// <param name="strmWriter">Materializer for local .strm/NFO/source files.</param>
+    /// <param name="auditLogService">Audit service.</param>
     /// <param name="logger">Logger instance.</param>
     public FederationSyncTask(
         ILibraryManager libraryManager,
         PeerClient peerClient,
         StrmWriter strmWriter,
+        AuditLogService auditLogService,
         ILogger<FederationSyncTask> logger)
     {
         _libraryManager = libraryManager;
         _peerClient = peerClient;
         _strmWriter = strmWriter;
+        _auditLogService = auditLogService;
         _logger = logger;
     }
 
@@ -248,7 +253,9 @@ public class FederationSyncTask : IScheduledTask
 
         try
         {
+            PeerIdentity.EnsurePeerId(peer);
             _logger.LogInformation("JellyFed sync: starting peer {PeerName}", peer.Name);
+            _auditLogService.WritePeerEvent(peer, "peer.sync.started", $"Started sync for {peer.Name}.");
 
             var catalog = await _peerClient.GetCatalogAsync(peer, null, cancellationToken)
                 .ConfigureAwait(false);
@@ -257,6 +264,11 @@ public class FederationSyncTask : IScheduledTask
             {
                 result.Error = "Peer unreachable.";
                 _logger.LogWarning("JellyFed sync: could not reach peer {PeerName}, skipping.", peer.Name);
+                _auditLogService.WritePeerEvent(
+                    peer,
+                    "peer.sync.unreachable",
+                    $"Skipped sync for {peer.Name} because the peer was unreachable.",
+                    AuditLogSeverities.Warning);
                 return result;
             }
 
@@ -422,6 +434,18 @@ public class FederationSyncTask : IScheduledTask
                 result.AddedSeries,
                 result.SkippedMovies,
                 result.SkippedSeries);
+            _auditLogService.WritePeerEvent(
+                peer,
+                "peer.sync.completed",
+                $"Completed sync for {peer.Name}.",
+                details: new
+                {
+                    result.AddedMovies,
+                    result.AddedSeries,
+                    result.SkippedMovies,
+                    result.SkippedSeries,
+                    result.Pruned
+                });
 
             // Discovery is suggestion-only in v1. Sync never auto-registers this instance back on the peer.
         }
@@ -434,6 +458,12 @@ public class FederationSyncTask : IScheduledTask
         catch (Exception ex)
         {
             result.Error = ex.Message;
+            _auditLogService.WritePeerEvent(
+                peer,
+                "peer.sync.failed",
+                $"Sync failed for {peer.Name}: {ex.Message}",
+                AuditLogSeverities.Error,
+                new { error = ex.Message });
             _logger.LogError(ex, "JellyFed sync: peer {PeerName} failed.", peer.Name);
         }
 #pragma warning restore CA1031

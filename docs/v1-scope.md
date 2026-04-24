@@ -17,12 +17,15 @@ Cette contrainte détermine quelles features **doivent** être implémentées av
 
 Tout ce qui suit constitue l'interface stable du plugin. Une fois v1 publiée, chaque modification de ces contrats est soit bannie, soit obligatoirement versionnée avec migration.
 
+Le slice logs/audit v1 ajoute aussi un contrat d'observabilité : store SQLite local (`.jellyfed-audit.sqlite3`), endpoints admin-only `/JellyFed/logs/*`, et attribution des accès peer par `PeerId` stable quand l'`AccessToken` per-peer est disponible.
+
 | Contrat | Support | Impact d'un changement post-v1 |
 |---|---|---|
 | Layout bibliothèque | `{MoviesRoot|SeriesRoot|AnimeRoot}/{PeerName}/...` sur disque | Migration disque + rescan Jellyfin |
 | Format `.strm` | Fichier texte, URL + token | Resync complet de tous les peers |
 | Format `.nfo` | XML, `<fileinfo><streamdetails>` | Rescan Jellyfin (perte métadonnées en attendant) |
 | Schema `.jellyfed-manifest.json` | JSON local au plugin | Perte de l'historique, pruning cassé |
+| Schema `.jellyfed-audit.sqlite3` | SQLite locale au plugin | Perte d'observabilité, migration audit requise |
 | Schema `PluginConfiguration` | XML interne Jellyfin | Reconfiguration manuelle des peers |
 | Routes API `/JellyFed/v1/...` | HTTP inter-peers | Peers anciennes versions déconnectés |
 | DTOs catalogue (`CatalogItemDto`, `EpisodeDto`, `MediaStreamInfoDto`) | JSON wire format | Sync cross-version rompue |

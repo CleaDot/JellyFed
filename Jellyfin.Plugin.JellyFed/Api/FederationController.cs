@@ -11,6 +11,7 @@ using Jellyfin.Data.Enums;
 using Jellyfin.Database.Implementations.Enums;
 using Jellyfin.Plugin.JellyFed;
 using Jellyfin.Plugin.JellyFed.Api.Dto;
+using Jellyfin.Plugin.JellyFed.Audit;
 using Jellyfin.Plugin.JellyFed.Configuration;
 using Jellyfin.Plugin.JellyFed.Sync;
 using MediaBrowser.Controller.Entities;
@@ -38,6 +39,7 @@ public class FederationController : ControllerBase
     private readonly FederationSyncTask _syncTask;
     private readonly PeerClient _peerClient;
     private readonly StrmWriter _strmWriter;
+    private readonly AuditLogService _auditLogService;
     private readonly ILogger<FederationController> _logger;
 
     /// <summary>
@@ -48,6 +50,7 @@ public class FederationController : ControllerBase
     /// <param name="syncTask">Instance of the <see cref="FederationSyncTask"/> used for per-peer sync.</param>
     /// <param name="peerClient">Instance of the <see cref="PeerClient"/> used for health checks.</param>
     /// <param name="strmWriter">Instance of the <see cref="StrmWriter"/> used for local materialization updates.</param>
+    /// <param name="auditLogService">Audit service.</param>
     /// <param name="logger">Instance of the <see cref="ILogger{FederationController}"/> interface.</param>
     public FederationController(
         ILibraryManager libraryManager,
@@ -55,6 +58,7 @@ public class FederationController : ControllerBase
         FederationSyncTask syncTask,
         PeerClient peerClient,
         StrmWriter strmWriter,
+        AuditLogService auditLogService,
         ILogger<FederationController> logger)
     {
         _libraryManager = libraryManager;
@@ -62,6 +66,7 @@ public class FederationController : ControllerBase
         _syncTask = syncTask;
         _peerClient = peerClient;
         _strmWriter = strmWriter;
+        _auditLogService = auditLogService;
         _logger = logger;
     }
 
@@ -131,8 +136,8 @@ public class FederationController : ControllerBase
         [FromQuery] int offset = 0)
     {
         var baseUrl = GetBaseUrl();
-        var token = Plugin.Instance!.Configuration.FederationToken;
-        var apiKey = Plugin.Instance.Configuration.JellyfinApiKey;
+        var token = GetEffectivePeerTokenOrGlobal();
+        var apiKey = Plugin.Instance?.Configuration?.JellyfinApiKey;
 
         DateTime? sinceDate = null;
         if (!string.IsNullOrEmpty(since) &&
@@ -160,6 +165,14 @@ public class FederationController : ControllerBase
             items.Count,
             type ?? "all",
             since ?? "all");
+
+        _auditLogService.WriteRequestEvent(
+            HttpContext,
+            AuditLogCategories.PeerAccess,
+            "catalog.exported",
+            $"Exported {page.Length} catalog items to a federated peer.",
+            statusCode: StatusCodes.Status200OK,
+            details: new { total = items.Count, returned = page.Length, type = type ?? "all", since, offset, limit });
 
         return Ok(new CatalogResponseDto { Total = items.Count, Items = page });
     }
@@ -189,8 +202,8 @@ public class FederationController : ControllerBase
         }
 
         var baseUrl = GetBaseUrl();
-        var token = Plugin.Instance!.Configuration.FederationToken;
-        var apiKey = Plugin.Instance.Configuration.JellyfinApiKey;
+        var token = GetEffectivePeerTokenOrGlobal();
+        var apiKey = Plugin.Instance?.Configuration?.JellyfinApiKey;
 
         var seasons = _libraryManager.GetItemList(new InternalItemsQuery
         {
@@ -249,6 +262,14 @@ public class FederationController : ControllerBase
             "GET /JellyFed/v1/catalog/series/{SeriesId}/seasons — {SeasonCount} seasons",
             seriesId,
             response.Seasons.Count);
+
+        _auditLogService.WriteRequestEvent(
+            HttpContext,
+            AuditLogCategories.PeerAccess,
+            "catalog.series-seasons.exported",
+            $"Exported seasons and episodes for series {seriesId}.",
+            statusCode: StatusCodes.Status200OK,
+            details: new { seriesId, seasonCount = response.Seasons.Count });
 
         return Ok(response);
     }
@@ -497,6 +518,11 @@ public class FederationController : ControllerBase
         if (isBlocked)
         {
             _logger.LogInformation("JellyFed: registration from {Name} ({Url}) refused — peer is blocked.", request.Name, request.Url);
+            _auditLogService.WriteSecurityEvent(
+                "peer.registration.blocked",
+                $"Blocked registration attempt from {request.Name}.",
+                HttpContext,
+                details: new { request.Name, request.Url });
             return Ok(new RegisterPeerResponseDto { Status = "blocked", Message = "This peer has been removed by an admin." });
         }
 
@@ -517,6 +543,8 @@ public class FederationController : ControllerBase
                 AccessToken = null
             });
         }
+
+        PeerIdentity.EnsurePeerId(existing);
 
         // Existing manually-added peer: issue a token if not already done, reuse otherwise.
         // Regenerating on every re-registration would invalidate in-flight requests.
@@ -608,6 +636,138 @@ public class FederationController : ControllerBase
         }
 
         return Ok(new ManifestStatsDto { Peers = [.. stats.Values.OrderBy(p => p.Name)] });
+    }
+
+    /// <summary>
+    /// Returns federated items that currently have more than one known upstream source.
+    /// Used by the admin UI to let an operator promote a different source.
+    /// </summary>
+    /// <param name="search">Optional search string matched against title, key and peer names.</param>
+    /// <param name="limit">Maximum number of items to return.</param>
+    /// <returns>Multi-source items for admin source selection.</returns>
+    [HttpGet("admin/sources")]
+    [AllowAnonymous]
+    [ServiceFilter(typeof(AdminAccessFilter))]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    public ActionResult GetAdminSources([FromQuery] string? search = null, [FromQuery] int limit = 100)
+    {
+        var config = Plugin.Instance?.Configuration;
+        if (config is null || string.IsNullOrWhiteSpace(config.LibraryPath))
+        {
+            return Ok(new { items = Array.Empty<object>() });
+        }
+
+        limit = Math.Clamp(limit, 1, 500);
+        var manifest = ManifestStore.Load(config.LibraryPath);
+        var needle = string.IsNullOrWhiteSpace(search) ? null : search.Trim();
+        var items = new List<object>();
+
+        AppendMultiSourceItems(items, manifest.Movies, "Movie", needle, limit);
+        if (items.Count < limit)
+        {
+            AppendMultiSourceItems(items, manifest.Series, "Series", needle, limit);
+        }
+
+        return Ok(new { items });
+    }
+
+    /// <summary>
+    /// Promotes one source as the current primary source for a federated item and rewrites
+    /// the local materialization so future playback uses the selected peer.
+    /// </summary>
+    /// <param name="request">Selection request.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>Updated primary source summary.</returns>
+    [HttpPost("admin/sources/select")]
+    [AllowAnonymous]
+    [ServiceFilter(typeof(AdminAccessFilter))]
+    [SuppressMessage("Security", "CA3003:Review code for file path injection vulnerabilities", Justification = "Selection only promotes an existing manifest entry loaded from disk; no request-provided path is used directly.")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    public async Task<ActionResult> SelectPrimarySource(
+        [FromBody] SelectPrimarySourceRequestDto request,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(request.ItemType) ||
+            string.IsNullOrWhiteSpace(request.ItemKey) ||
+            string.IsNullOrWhiteSpace(request.PeerName))
+        {
+            return BadRequest("ItemType, ItemKey and PeerName are required.");
+        }
+
+        var config = Plugin.Instance?.Configuration;
+        if (config is null || string.IsNullOrWhiteSpace(config.LibraryPath))
+        {
+            return BadRequest("LibraryPath is not configured.");
+        }
+
+        var manifest = ManifestStore.Load(config.LibraryPath);
+        var entries = string.Equals(request.ItemType, "Movie", StringComparison.OrdinalIgnoreCase)
+            ? manifest.Movies
+            : string.Equals(request.ItemType, "Series", StringComparison.OrdinalIgnoreCase)
+                ? manifest.Series
+                : null;
+        if (entries is null)
+        {
+            return BadRequest("ItemType must be Movie or Series.");
+        }
+
+        if (!entries.TryGetValue(request.ItemKey, out var entry))
+        {
+            return NotFound();
+        }
+
+        entry.Sources ??= [];
+        if (entry.Sources.Count == 0 && !string.IsNullOrWhiteSpace(entry.PeerName))
+        {
+            entry.Sources =
+            [
+                new ManifestSource
+                {
+                    PeerName = entry.PeerName,
+                    JellyfinId = entry.JellyfinId
+                }
+            ];
+        }
+
+        var selected = entry.Sources.FirstOrDefault(source =>
+            string.Equals(source.PeerName, request.PeerName, StringComparison.OrdinalIgnoreCase));
+        if (selected is null)
+        {
+            return BadRequest("Selected source is not available for this item.");
+        }
+
+        entry.PeerName = selected.PeerName;
+        entry.JellyfinId = selected.JellyfinId;
+        TryMoveEntryToPrimaryPeerFolder(entry);
+        await RehydratePromotedEntryAsync(entry, request.ItemKey, request.ItemType, config, cancellationToken).ConfigureAwait(false);
+        entry.SyncedAt = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+        ManifestStore.Save(config.LibraryPath, manifest);
+        _libraryManager.QueueLibraryScan();
+
+        var selectedPeer = config.Peers.FirstOrDefault(peer =>
+            string.Equals(peer.Name, entry.PeerName, StringComparison.OrdinalIgnoreCase));
+        if (selectedPeer is not null)
+        {
+            _auditLogService.WritePeerEvent(
+                selectedPeer,
+                "peer.source-promoted",
+                $"Promoted {selectedPeer.Name} as the primary source for {Path.GetFileName(entry.Path)}.",
+                details: new { request.ItemType, request.ItemKey });
+        }
+
+        return Ok(new
+        {
+            status = "ok",
+            itemType = request.ItemType,
+            itemKey = request.ItemKey,
+            primaryPeerName = entry.PeerName,
+            title = GetEntryDisplayTitle(entry)
+        });
     }
 
     /// <summary>
@@ -897,8 +1057,9 @@ public class FederationController : ControllerBase
             .HealthCheckAsync(urlTrim, request.FederationToken, cancellationToken)
             .ConfigureAwait(false);
 
-        config.Peers.Add(new PeerConfiguration
+        var newPeer = new PeerConfiguration
         {
+            PeerId = Guid.NewGuid().ToString("N"),
             Name = nameTrim,
             Url = urlTrim,
             FederationToken = request.FederationToken,
@@ -908,7 +1069,8 @@ public class FederationController : ControllerBase
             SyncSeries = request.SyncSeries,
             SyncAnime = request.SyncAnime,
             AccessToken = null
-        });
+        };
+        config.Peers.Add(newPeer);
 
         config.DiscoveredPeers.RemoveAll(p => string.Equals(p.Url, urlTrim, StringComparison.OrdinalIgnoreCase));
 
@@ -918,6 +1080,11 @@ public class FederationController : ControllerBase
             nameTrim,
             reachable,
             version ?? "unknown");
+        _auditLogService.WritePeerEvent(
+            newPeer,
+            "peer.added-manually",
+            $"Added peer {newPeer.Name} from the admin UI.",
+            details: new { reachable, version, syncMovies = newPeer.SyncMovies, syncSeries = newPeer.SyncSeries, syncAnime = newPeer.SyncAnime });
 
         return Ok(new
         {
@@ -963,6 +1130,8 @@ public class FederationController : ControllerBase
         {
             return NotFound();
         }
+
+        PeerIdentity.EnsurePeerId(peer);
 
         var oldName = peer.Name;
 
@@ -1023,6 +1192,11 @@ public class FederationController : ControllerBase
 
         Plugin.Instance!.SaveConfiguration();
         _logger.LogInformation("JellyFed: peer {OldName} updated (now {NewName}).", oldName, peer.Name);
+        _auditLogService.WritePeerEvent(
+            peer,
+            "peer.updated",
+            $"Updated peer {oldName}.",
+            details: new { oldName, newName = peer.Name, peer.Url, peer.Enabled, peer.SyncMovies, peer.SyncSeries, peer.SyncAnime });
         return Ok(new { status = "ok" });
     }
 
@@ -1052,6 +1226,24 @@ public class FederationController : ControllerBase
 
         _logger.LogInformation("JellyFed: per-peer sync requested for {PeerName}.", peer.Name);
         var result = await _syncTask.SyncPeerAsync(peer, cancellationToken).ConfigureAwait(false);
+
+        _auditLogService.WritePeerEvent(
+            peer,
+            result.Error is null ? "peer.sync.requested-success" : "peer.sync.requested-failed",
+            result.Error is null
+                ? $"Manual sync completed for {peer.Name}."
+                : $"Manual sync failed for {peer.Name}: {result.Error}",
+            result.Error is null ? AuditLogSeverities.Info : AuditLogSeverities.Error,
+            new
+            {
+                result.AddedMovies,
+                result.AddedSeries,
+                result.SkippedMovies,
+                result.SkippedSeries,
+                result.Pruned,
+                result.DurationMs,
+                result.Error
+            });
 
         return Ok(new PeerSyncResultDto
         {
@@ -1095,6 +1287,8 @@ public class FederationController : ControllerBase
             return NotFound();
         }
 
+        PeerIdentity.EnsurePeerId(peer);
+
         var summary = await PurgePeerDataAsync(config, peer.Name, cancellationToken).ConfigureAwait(false);
 
         // Reset the local counters in PeerStatus so the UI shows "never" after purge.
@@ -1107,6 +1301,13 @@ public class FederationController : ControllerBase
             status.LastSyncDurationMs = 0;
             PeerStateStore.Save(config.LibraryPath, states);
         }
+
+        _auditLogService.WritePeerEvent(
+            peer,
+            "peer.purged",
+            $"Purged federated content for {peer.Name} while keeping the peer configured.",
+            AuditLogSeverities.Warning,
+            new { summary.DeletedMovies, summary.DeletedSeries });
 
         return Ok(new
         {
@@ -1172,6 +1373,13 @@ public class FederationController : ControllerBase
             summary.DeletedMovies,
             summary.DeletedSeries);
 
+        _auditLogService.WritePeerEvent(
+            peer,
+            "peer.removed",
+            $"Removed peer {peer.Name} and revoked its access token.",
+            AuditLogSeverities.Warning,
+            new { summary.DeletedMovies, summary.DeletedSeries, blockedUrl = peer.Url });
+
         return Ok(new
         {
             status = "ok",
@@ -1196,10 +1404,18 @@ public class FederationController : ControllerBase
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "CA3003:Review code for file path injection vulnerabilities", Justification = "Path is retrieved from the Jellyfin library manager by GUID, not from user input directly.")]
     public ActionResult StreamItem([FromRoute] string itemId, [FromQuery] string? token)
     {
-        if (!ValidateStreamToken(token))
+        var requestIdentity = ResolveQueryTokenIdentity(token);
+        if (requestIdentity is null)
         {
+            _auditLogService.WriteSecurityEvent(
+                "stream.invalid-token",
+                $"Rejected stream request for item {itemId} because the query token was invalid.",
+                HttpContext,
+                details: new { itemId });
             return Unauthorized();
         }
+
+        FederationRequestIdentityAccessor.Set(HttpContext, requestIdentity);
 
         if (!Guid.TryParse(itemId, out var guid))
         {
@@ -1212,6 +1428,13 @@ public class FederationController : ControllerBase
         var apiKey = Plugin.Instance?.Configuration.JellyfinApiKey;
         if (!string.IsNullOrWhiteSpace(apiKey))
         {
+            _auditLogService.WriteRequestEvent(
+                HttpContext,
+                AuditLogCategories.PeerAccess,
+                "stream.redirected",
+                $"Accepted stream request for item {itemId} and redirected through Jellyfin.",
+                statusCode: StatusCodes.Status302Found,
+                details: new { itemId, authMode = requestIdentity.AuthMode, mode = "jellyfin-redirect" });
             // Static=true → source Jellyfin serves the raw file with proper range request
             // support. This allows the client's FFmpeg to seek within the stream (for HLS
             // transcoding). Static=false would start a transcoding session on the source,
@@ -1225,6 +1448,14 @@ public class FederationController : ControllerBase
         {
             return NotFound();
         }
+
+        _auditLogService.WriteRequestEvent(
+            HttpContext,
+            AuditLogCategories.PeerAccess,
+            "stream.served",
+            $"Served a direct media stream for item {itemId}.",
+            statusCode: StatusCodes.Status200OK,
+            details: new { itemId, authMode = requestIdentity.AuthMode, mode = "direct-file" });
 
         return PhysicalFile(item.Path, GetMimeType(item.Path), enableRangeProcessing: true);
     }
@@ -1248,10 +1479,18 @@ public class FederationController : ControllerBase
         [FromRoute] string imageType,
         [FromQuery] string? token)
     {
-        if (!ValidateStreamToken(token))
+        var requestIdentity = ResolveQueryTokenIdentity(token);
+        if (requestIdentity is null)
         {
+            _auditLogService.WriteSecurityEvent(
+                "image.invalid-token",
+                $"Rejected image request for item {itemId} because the query token was invalid.",
+                HttpContext,
+                details: new { itemId, imageType });
             return Unauthorized();
         }
+
+        FederationRequestIdentityAccessor.Set(HttpContext, requestIdentity);
 
         if (!Guid.TryParse(itemId, out var guid))
         {
@@ -1288,6 +1527,14 @@ public class FederationController : ControllerBase
             ".webp" => "image/webp",
             _ => "image/jpeg"
         };
+
+        _auditLogService.WriteRequestEvent(
+            HttpContext,
+            AuditLogCategories.PeerAccess,
+            "image.served",
+            $"Served a {imageType} image for item {itemId}.",
+            statusCode: StatusCodes.Status200OK,
+            details: new { itemId, imageType, authMode = requestIdentity.AuthMode });
 
         return PhysicalFile(imageInfo.Path, mimeType);
     }
@@ -1373,6 +1620,8 @@ public class FederationController : ControllerBase
             }
         }
 
+        var clearedPeerCount = config.Peers.Count;
+
         // Generate a new federation token and clear the peer list.
         config.FederationToken = GenerateAccessToken();
         config.Peers.Clear();
@@ -1382,6 +1631,20 @@ public class FederationController : ControllerBase
 
         _logger.LogWarning(
             "JellyFed: network reset — new federation token generated, all peers and STRMs cleared.");
+
+        _auditLogService.Write(new AuditLogEntry
+        {
+            Category = AuditLogCategories.Security,
+            EventType = "network.reset",
+            Severity = AuditLogSeverities.Warning,
+            Message = "Reset the JellyFed network, generated a new federation token, and cleared all peers.",
+            ActorType = "admin-or-local",
+            Method = HttpContext.Request.Method,
+            Path = HttpContext.Request.Path.Value,
+            RemoteIp = HttpContext.Connection.RemoteIpAddress?.ToString(),
+            StatusCode = StatusCodes.Status200OK,
+            DetailsJson = AuditLogEntry.SerializeDetails(new { clearedPeerCount })
+        });
 
         return Ok(new { status = "ok", newToken = config.FederationToken });
     }
@@ -1720,16 +1983,19 @@ public class FederationController : ControllerBase
             ? $"{baseUrl}/Items/{itemId:N}/Images/{imageType}?api_key={apiKey}"
             : $"{baseUrl}{FederationProtocol.ToV1Path($"image/{itemId:N}/{imageType}")}?token={token}";
 
-    private static bool ValidateStreamToken(string? token)
+    private string GetEffectivePeerTokenOrGlobal()
     {
-        var config = Plugin.Instance?.Configuration;
-        if (config is null || string.IsNullOrWhiteSpace(config.FederationToken))
+        var requestIdentity = FederationRequestIdentityAccessor.Get(HttpContext);
+        if (!string.IsNullOrWhiteSpace(requestIdentity?.PresentedToken) && requestIdentity.IsPeerAttributed)
         {
-            return false;
+            return requestIdentity.PresentedToken!;
         }
 
-        return string.Equals(token, config.FederationToken, StringComparison.Ordinal);
+        return Plugin.Instance!.Configuration.FederationToken;
     }
+
+    private FederationRequestIdentity? ResolveQueryTokenIdentity(string? token)
+        => _auditLogService.ResolveFederationToken(token);
 
     private static string GetMimeType(string path)
     {
@@ -1994,6 +2260,7 @@ public class FederationController : ControllerBase
             ? parsed
             : DateTime.MinValue;
 
+    [SuppressMessage("Security", "CA3003:Review code for file path injection vulnerabilities", Justification = "entry.Path comes from persisted manifest data owned by JellyFed.")]
     private static void TryMoveEntryToPrimaryPeerFolder(ManifestEntry entry)
     {
         if (string.IsNullOrWhiteSpace(entry.Path) || !Directory.Exists(entry.Path))
@@ -2029,6 +2296,72 @@ public class FederationController : ControllerBase
         {
             currentPeerDir.Delete();
         }
+    }
+
+    private static void AppendMultiSourceItems(
+        List<object> items,
+        Dictionary<string, ManifestEntry> entries,
+        string itemType,
+        string? search,
+        int limit)
+    {
+        foreach (var pair in entries.OrderBy(kv => GetEntryDisplayTitle(kv.Value), StringComparer.OrdinalIgnoreCase))
+        {
+            if (items.Count >= limit)
+            {
+                return;
+            }
+
+            var entry = pair.Value;
+            var sources = entry.Sources?.Where(source => !string.IsNullOrWhiteSpace(source.PeerName)).ToList() ?? [];
+            if (sources.Count <= 1)
+            {
+                continue;
+            }
+
+            var title = GetEntryDisplayTitle(entry);
+            if (!string.IsNullOrWhiteSpace(search))
+            {
+                var matches = title.Contains(search, StringComparison.OrdinalIgnoreCase)
+                    || pair.Key.Contains(search, StringComparison.OrdinalIgnoreCase)
+                    || sources.Any(source => source.PeerName.Contains(search, StringComparison.OrdinalIgnoreCase));
+                if (!matches)
+                {
+                    continue;
+                }
+            }
+
+            items.Add(new
+            {
+                itemType,
+                itemKey = pair.Key,
+                title,
+                path = entry.Path,
+                primaryPeerName = entry.PeerName,
+                sources = sources.Select(source => new
+                {
+                    peerName = source.PeerName,
+                    jellyfinId = source.JellyfinId,
+                    width = source.Width,
+                    height = source.Height,
+                    updatedAt = source.UpdatedAt
+                }).ToArray()
+            });
+        }
+    }
+
+    private static string GetEntryDisplayTitle(ManifestEntry entry)
+    {
+        if (!string.IsNullOrWhiteSpace(entry.Path))
+        {
+            var name = Path.GetFileName(entry.Path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                return name;
+            }
+        }
+
+        return entry.JellyfinId;
     }
 
     private static IEnumerable<string> EnumerateSourcePeers(ManifestEntry entry)
