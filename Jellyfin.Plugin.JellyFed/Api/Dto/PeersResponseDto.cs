@@ -9,4 +9,7 @@ public class PeersResponseDto
 {
     /// <summary>Gets the list of configured peers with their current status.</summary>
     public IReadOnlyList<PeerDto> Peers { get; init; } = [];
+
+    /// <summary>Gets or sets a value indicating whether this instance can be suggested by direct peers.</summary>
+    public bool SelfDiscoverable { get; set; }
 }

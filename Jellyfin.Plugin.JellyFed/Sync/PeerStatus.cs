@@ -16,6 +16,12 @@ public class PeerStatus
     /// <summary>Gets or sets the JellyFed version reported by the peer.</summary>
     public string Version { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Gets or sets a value indicating whether the peer allows itself to be suggested to second-hop peers.
+    /// Null means the value has not been observed yet.
+    /// </summary>
+    public bool? Discoverable { get; set; }
+
     /// <summary>Gets or sets the number of movies in the peer's catalog.</summary>
     public int MovieCount { get; set; }
 

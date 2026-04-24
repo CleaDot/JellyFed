@@ -137,7 +137,7 @@ Ces features n'affectent aucun contrat public et peuvent être ajoutées en v1.x
 | Feature | Version cible | Nature |
 |---|---|---|
 | UI settings refonte | v1.1 | Interne plugin, zéro impact format |
-| FEAT-03 peer-of-peer discovery | v1.2 | Nouveau endpoint + champ config optionnel (`SharePeers`, défaut false) |
+| FEAT-03++ discovery étendue / gossip récursif | v1.2 | Extension additive au-dessus de la discovery v1 déjà présente |
 | FEAT-04 recall | v1.3 | Nouveau endpoint, opération manuelle |
 | FEAT-05 suppression propagée | v1.3 | Nouveau endpoint `/peer/leave`, handler côté cible |
 | TECH-01 rechargement config à chaud | v1.x | Interne |

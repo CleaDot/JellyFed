@@ -35,7 +35,7 @@ public sealed class FederationAuthFilter : ActionFilterAttribute
         var token = authHeader["Bearer ".Length..].Trim();
 
         // Primary check: per-peer access tokens (revocable when peer is removed).
-        // A peer that completed auto-registration uses the token issued specifically to it.
+        // A peer that completed the optional per-peer token exchange uses the token issued specifically to it.
         var validPerPeer = config.Peers.Any(p =>
             p.Enabled &&
             !string.IsNullOrEmpty(p.AccessToken) &&
@@ -47,7 +47,7 @@ public sealed class FederationAuthFilter : ActionFilterAttribute
         }
 
         // Fallback: global federation token, for peers that haven't completed
-        // auto-registration yet (manual setup or first contact).
+        // received a per-peer token yet (manual setup or first contact).
         if (!string.Equals(token, config.FederationToken, System.StringComparison.Ordinal))
         {
             context.Result = new UnauthorizedObjectResult("Invalid federation token.");

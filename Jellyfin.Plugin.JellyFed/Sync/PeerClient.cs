@@ -176,6 +176,37 @@ public class PeerClient
     }
 
     /// <summary>
+    /// Fetches the discovery payload advertised by a direct peer.
+    /// The payload contains the peer itself plus any direct peers it is willing to suggest.
+    /// </summary>
+    /// <param name="peer">The direct peer to query.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The discovery payload, or null on failure.</returns>
+    public async Task<DiscoveryResponseDto?> GetDiscoveryAsync(
+        PeerConfiguration peer,
+        CancellationToken cancellationToken)
+    {
+        var url = BuildUrl(peer, "/JellyFed/discovery");
+
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", peer.FederationToken);
+
+            using var response = await _http.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+
+            return await response.Content.ReadFromJsonAsync<DiscoveryResponseDto>(cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Failed to fetch discovery payload from peer {PeerName} ({Url})", peer.Name, url);
+            return null;
+        }
+    }
+
+    /// <summary>
     /// Downloads a remote image to a local file path.
     /// </summary>
     /// <param name="imageUrl">The remote image URL.</param>
@@ -262,6 +293,11 @@ public class PeerClient
             if (localPeer is not null &&
                 !string.Equals(localPeer.FederationToken, result.AccessToken, StringComparison.Ordinal))
             {
+                if (string.IsNullOrWhiteSpace(localPeer.DiscoveryToken))
+                {
+                    localPeer.DiscoveryToken = localPeer.FederationToken;
+                }
+
                 localPeer.FederationToken = result.AccessToken;
                 Plugin.Instance!.SaveConfiguration();
                 _logger.LogInformation(

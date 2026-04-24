@@ -401,12 +401,68 @@ public class FederationController : ControllerBase
             };
         }).ToList();
 
-        return Ok(new PeersResponseDto { Peers = peers });
+        return Ok(new PeersResponseDto
+        {
+            Peers = peers,
+            SelfDiscoverable = config.Discoverable
+        });
     }
 
     /// <summary>
-    /// Registers a federation request from a remote instance.
-    /// Added as a disabled peer for the admin to review and enable.
+    /// Returns the discovery announcement for this instance.
+    /// The payload includes this instance plus discoverable direct peers only;
+    /// discovered suggestions are never relayed recursively.
+    /// </summary>
+    /// <returns>Discovery announcement for direct peers.</returns>
+    [HttpGet("discovery")]
+    [AllowAnonymous]
+    [ServiceFilter(typeof(FederationAuthFilter))]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    public ActionResult<DiscoveryResponseDto> GetDiscovery()
+    {
+        var config = Plugin.Instance?.Configuration;
+        if (config is null)
+        {
+            return Ok(new DiscoveryResponseDto());
+        }
+
+        var states = string.IsNullOrWhiteSpace(config.LibraryPath)
+            ? new Dictionary<string, PeerStatus>()
+            : PeerStateStore.Load(config.LibraryPath);
+
+        var directPeers = config.Peers
+            .Where(p => p.Enabled)
+            .Select(peer =>
+            {
+                states.TryGetValue(peer.Name, out var status);
+                return new { Peer = peer, Status = status };
+            })
+            .Where(x => x.Status?.Discoverable == true)
+            .Select(x => new DiscoveryPeerDto
+            {
+                Name = x.Peer.Name,
+                Url = x.Peer.Url,
+                FederationToken = GetDiscoveryToken(x.Peer),
+                Version = x.Status?.Version,
+                Discoverable = true
+            })
+            .Where(p => !string.IsNullOrWhiteSpace(p.Url) && !string.IsNullOrWhiteSpace(p.FederationToken))
+            .GroupBy(p => NormalizeUrl(p.Url), StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.First())
+            .OrderBy(p => p.Name)
+            .ToList();
+
+        return Ok(new DiscoveryResponseDto
+        {
+            Self = BuildSelfDiscoveryDto(config),
+            DirectPeers = directPeers
+        });
+    }
+
+    /// <summary>
+    /// Handles a legacy federation registration request from a remote instance.
+    /// v1 discovery is manual-add only: unknown peers are never auto-created here.
     /// </summary>
     /// <param name="request">The registration request.</param>
     /// <returns>Status of the registration.</returns>
@@ -443,35 +499,32 @@ public class FederationController : ControllerBase
         var existing = config.Peers.FirstOrDefault(p =>
             string.Equals(p.Url, request.Url, StringComparison.OrdinalIgnoreCase));
 
-        string accessToken;
-
         if (existing is null)
         {
-            // New peer: create entry with a fresh per-peer access token.
-            accessToken = GenerateAccessToken();
-            config.Peers.Add(new Configuration.PeerConfiguration
-            {
-                Name = request.Name,
-                Url = request.Url,
-                FederationToken = request.FederationToken,
-                Enabled = true,
-                SyncMovies = true,
-                SyncSeries = true,
-                AccessToken = accessToken
-            });
-            _logger.LogInformation("JellyFed: auto-registered peer {Name} ({Url}).", request.Name, request.Url);
-        }
-        else
-        {
-            // Existing peer: issue a token if not already done, reuse otherwise.
-            // Regenerating on every re-registration would invalidate in-flight requests.
-            if (string.IsNullOrEmpty(existing.AccessToken))
-            {
-                existing.AccessToken = GenerateAccessToken();
-                _logger.LogInformation("JellyFed: issued access token for existing peer {Name} ({Url}).", request.Name, request.Url);
-            }
+            _logger.LogInformation(
+                "JellyFed: registration from {Name} ({Url}) requires manual admin approval; no peer created.",
+                request.Name,
+                request.Url);
 
-            accessToken = existing.AccessToken;
+            return Ok(new RegisterPeerResponseDto
+            {
+                Status = "manual_add_required",
+                Message = "Manual admin approval required. Add this peer from the Peers page to enable sync.",
+                AccessToken = null
+            });
+        }
+
+        // Existing manually-added peer: issue a token if not already done, reuse otherwise.
+        // Regenerating on every re-registration would invalidate in-flight requests.
+        if (string.IsNullOrEmpty(existing.AccessToken))
+        {
+            existing.AccessToken = GenerateAccessToken();
+            _logger.LogInformation("JellyFed: issued access token for existing peer {Name} ({Url}).", request.Name, request.Url);
+        }
+
+        if (string.IsNullOrWhiteSpace(existing.DiscoveryToken))
+        {
+            existing.DiscoveryToken = request.FederationToken;
         }
 
         Plugin.Instance!.SaveConfiguration();
@@ -479,8 +532,8 @@ public class FederationController : ControllerBase
         return Ok(new RegisterPeerResponseDto
         {
             Status = "ok",
-            Message = "Peer registered.",
-            AccessToken = accessToken
+            Message = "Peer already approved.",
+            AccessToken = existing.AccessToken
         });
     }
 
@@ -632,19 +685,22 @@ public class FederationController : ControllerBase
     /// Returns full per-peer details for the admin "Peers" tab: identity, online/offline status,
     /// remote catalog counts (from heartbeat), local synced counts by type, disk usage and folder paths.
     /// </summary>
+    /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Per-peer detail list and last global sync timestamp.</returns>
     [HttpGet("peers/details")]
     [AllowAnonymous]
     [ServiceFilter(typeof(FederationAuthFilter))]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
-    public ActionResult<PeerDetailsResponseDto> GetPeersDetails()
+    public async Task<ActionResult<PeerDetailsResponseDto>> GetPeersDetails(CancellationToken cancellationToken)
     {
         var config = Plugin.Instance?.Configuration;
         if (config is null)
         {
             return Ok(new PeerDetailsResponseDto());
         }
+
+        await RefreshDiscoverySuggestionsAsync(config, cancellationToken).ConfigureAwait(false);
 
         var libraryPath = config.LibraryPath;
         var states = string.IsNullOrWhiteSpace(libraryPath)
@@ -748,14 +804,30 @@ public class FederationController : ControllerBase
         }
 
         _logger.LogInformation(
-            "JellyFed: GET /peers/details — {ConfigPeers} configured, {ReturnedPeers} returned, lastGlobalSyncAt={Sync}.",
+            "JellyFed: GET /peers/details — {ConfigPeers} configured, {ReturnedPeers} returned, {DiscoveredPeers} discovered, lastGlobalSyncAt={Sync}.",
             config.Peers.Count,
             peers.Count,
+            config.DiscoveredPeers.Count,
             latestSyncAt ?? "(none)");
 
         return Ok(new PeerDetailsResponseDto
         {
             Peers = peers,
+            DiscoveredPeers = config.DiscoveredPeers
+                .OrderBy(p => p.Name)
+                .ThenBy(p => p.Url)
+                .Select(p => new DiscoveredPeerDto
+                {
+                    Name = p.Name,
+                    Url = p.Url,
+                    FederationToken = p.FederationToken,
+                    SourcePeerName = p.SourcePeerName,
+                    Version = p.Version,
+                    HopCount = p.HopCount,
+                    LastDiscoveredAt = p.LastDiscoveredAt
+                })
+                .ToList(),
+            SelfDiscoverable = config.Discoverable,
             LastGlobalSyncAt = latestSyncAt
         });
     }
@@ -862,12 +934,15 @@ public class FederationController : ControllerBase
             Name = nameTrim,
             Url = urlTrim,
             FederationToken = request.FederationToken,
+            DiscoveryToken = request.FederationToken,
             Enabled = request.Enabled,
             SyncMovies = request.SyncMovies,
             SyncSeries = request.SyncSeries,
             SyncAnime = request.SyncAnime,
             AccessToken = null
         });
+
+        config.DiscoveredPeers.RemoveAll(p => string.Equals(p.Url, urlTrim, StringComparison.OrdinalIgnoreCase));
 
         Plugin.Instance!.SaveConfiguration();
         _logger.LogInformation(
@@ -955,6 +1030,7 @@ public class FederationController : ControllerBase
         if (!string.IsNullOrWhiteSpace(request.FederationToken))
         {
             peer.FederationToken = request.FederationToken;
+            peer.DiscoveryToken = request.FederationToken;
         }
 
         if (request.Enabled.HasValue)
@@ -1073,7 +1149,7 @@ public class FederationController : ControllerBase
 
     /// <summary>
     /// Removes a peer entirely: purge content, revoke its access token, drop from config and
-    /// blacklist its URL so it can't auto-register again.
+    /// blacklist its URL so it stays hidden from discovery suggestions until unblocked.
     /// </summary>
     /// <param name="name">Peer name.</param>
     /// <returns>Deletion summary.</returns>
@@ -1117,6 +1193,7 @@ public class FederationController : ControllerBase
         // Revoke the per-peer access token so it can no longer hit our API.
         peer.AccessToken = null;
         config.Peers.Remove(peer);
+        config.DiscoveredPeers.RemoveAll(p => string.Equals(p.Url, peer.Url, StringComparison.OrdinalIgnoreCase));
         Plugin.Instance!.SaveConfiguration();
 
         _logger.LogInformation(
@@ -1329,6 +1406,7 @@ public class FederationController : ControllerBase
         // Generate a new federation token and clear the peer list.
         config.FederationToken = GenerateAccessToken();
         config.Peers.Clear();
+        config.DiscoveredPeers.Clear();
         config.BlockedPeerUrls.Clear();
         Plugin.Instance!.SaveConfiguration();
 
@@ -1336,6 +1414,142 @@ public class FederationController : ControllerBase
             "JellyFed: network reset — new federation token generated, all peers and STRMs cleared.");
 
         return Ok(new { status = "ok", newToken = config.FederationToken });
+    }
+
+    private async Task RefreshDiscoverySuggestionsAsync(PluginConfiguration config, CancellationToken cancellationToken)
+    {
+        var directPeers = config.Peers
+            .Where(p => p.Enabled)
+            .Where(p => !string.IsNullOrWhiteSpace(p.Url) && !string.IsNullOrWhiteSpace(p.FederationToken))
+            .OrderBy(p => p.Name)
+            .ToList();
+
+        var directUrls = directPeers
+            .Select(p => NormalizeUrl(p.Url))
+            .Where(u => !string.IsNullOrWhiteSpace(u))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var blockedUrls = config.BlockedPeerUrls
+            .Select(NormalizeUrl)
+            .Where(u => !string.IsNullOrWhiteSpace(u))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var selfUrl = NormalizeUrl(config.SelfUrl);
+        var previous = config.DiscoveredPeers ?? [];
+        var previousByUrl = previous
+            .Where(p => !string.IsNullOrWhiteSpace(p.Url))
+            .GroupBy(p => NormalizeUrl(p.Url), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+        var refreshedSources = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var next = new Dictionary<string, DiscoveredPeerConfiguration>(StringComparer.OrdinalIgnoreCase);
+
+        Dictionary<string, PeerStatus>? states = null;
+        var statesChanged = false;
+        if (!string.IsNullOrWhiteSpace(config.LibraryPath))
+        {
+            states = PeerStateStore.Load(config.LibraryPath);
+        }
+
+        foreach (var peer in directPeers)
+        {
+            var discovery = await _peerClient.GetDiscoveryAsync(peer, cancellationToken).ConfigureAwait(false);
+            if (discovery is null)
+            {
+                continue;
+            }
+
+            refreshedSources.Add(peer.Name);
+
+            if (states is not null)
+            {
+                if (!states.TryGetValue(peer.Name, out var status))
+                {
+                    status = new PeerStatus();
+                    states[peer.Name] = status;
+                    statesChanged = true;
+                }
+
+                var discoverable = discovery.Self?.Discoverable;
+                if (status.Discoverable != discoverable)
+                {
+                    status.Discoverable = discoverable;
+                    statesChanged = true;
+                }
+
+                if (!string.IsNullOrWhiteSpace(discovery.Self?.Version) &&
+                    !string.Equals(status.Version, discovery.Self.Version, StringComparison.Ordinal))
+                {
+                    status.Version = discovery.Self.Version;
+                    statesChanged = true;
+                }
+            }
+
+            foreach (var candidate in discovery.DirectPeers ?? [])
+            {
+                var candidateUrl = NormalizeUrl(candidate.Url);
+                if (string.IsNullOrWhiteSpace(candidateUrl) ||
+                    string.IsNullOrWhiteSpace(candidate.FederationToken) ||
+                    !candidate.Discoverable ||
+                    directUrls.Contains(candidateUrl) ||
+                    blockedUrls.Contains(candidateUrl) ||
+                    string.Equals(candidateUrl, selfUrl, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(candidateUrl, NormalizeUrl(peer.Url), StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (next.ContainsKey(candidateUrl))
+                {
+                    continue;
+                }
+
+                previousByUrl.TryGetValue(candidateUrl, out var previousEntry);
+
+                next[candidateUrl] = new DiscoveredPeerConfiguration
+                {
+                    Name = string.IsNullOrWhiteSpace(candidate.Name) ? candidateUrl : candidate.Name.Trim(),
+                    Url = candidateUrl,
+                    FederationToken = candidate.FederationToken.Trim(),
+                    SourcePeerName = peer.Name,
+                    Version = candidate.Version,
+                    HopCount = 2,
+                    LastDiscoveredAt = previousEntry?.LastDiscoveredAt ?? DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture)
+                };
+            }
+        }
+
+        foreach (var stale in previous)
+        {
+            var staleUrl = NormalizeUrl(stale.Url);
+            if (string.IsNullOrWhiteSpace(staleUrl) ||
+                next.ContainsKey(staleUrl) ||
+                directUrls.Contains(staleUrl) ||
+                blockedUrls.Contains(staleUrl) ||
+                string.Equals(staleUrl, selfUrl, StringComparison.OrdinalIgnoreCase) ||
+                refreshedSources.Contains(stale.SourcePeerName) ||
+                !directPeers.Any(p => string.Equals(p.Name, stale.SourcePeerName, StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
+            next[staleUrl] = stale;
+        }
+
+        var nextList = next.Values
+            .OrderBy(p => p.Name)
+            .ThenBy(p => p.Url)
+            .ToList();
+
+        if (statesChanged && states is not null && !string.IsNullOrWhiteSpace(config.LibraryPath))
+        {
+            PeerStateStore.Save(config.LibraryPath, states);
+        }
+
+        if (!DiscoveryListsEqual(previous, nextList))
+        {
+            config.DiscoveredPeers = nextList;
+            Plugin.Instance!.SaveConfiguration();
+        }
     }
 
     /// <summary>
@@ -1395,6 +1609,57 @@ public class FederationController : ControllerBase
         => item.HasImage(imageType, 0);
 
     private static string GenerateAccessToken() => Guid.NewGuid().ToString("N");
+
+    private static DiscoveryPeerDto BuildSelfDiscoveryDto(PluginConfiguration config)
+        => new()
+        {
+            Name = string.IsNullOrWhiteSpace(config.SelfName)
+                ? Plugin.Instance?.Name ?? "JellyFed"
+                : config.SelfName.Trim(),
+            Url = NormalizeUrl(config.SelfUrl),
+            FederationToken = config.FederationToken,
+            Version = Plugin.Instance?.Version.ToString(3),
+            Discoverable = config.Discoverable
+        };
+
+    private static string GetDiscoveryToken(PeerConfiguration peer)
+        => !string.IsNullOrWhiteSpace(peer.DiscoveryToken)
+            ? peer.DiscoveryToken
+            : string.IsNullOrWhiteSpace(peer.AccessToken)
+                ? peer.FederationToken
+                : string.Empty;
+
+    private static bool DiscoveryListsEqual(
+        List<DiscoveredPeerConfiguration> left,
+        List<DiscoveredPeerConfiguration> right)
+    {
+        if (left.Count != right.Count)
+        {
+            return false;
+        }
+
+        for (var i = 0; i < left.Count; i++)
+        {
+            var a = left[i];
+            var b = right[i];
+            if (!string.Equals(a.Name, b.Name, StringComparison.Ordinal) ||
+                !string.Equals(NormalizeUrl(a.Url), NormalizeUrl(b.Url), StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(a.FederationToken, b.FederationToken, StringComparison.Ordinal) ||
+                !string.Equals(a.SourcePeerName, b.SourcePeerName, StringComparison.Ordinal) ||
+                !string.Equals(a.Version, b.Version, StringComparison.Ordinal) ||
+                a.HopCount != b.HopCount)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static string NormalizeUrl(string? url)
+        => string.IsNullOrWhiteSpace(url)
+            ? string.Empty
+            : url.Trim().TrimEnd('/');
 
     /// <summary>
     /// Extracts codec and all audio/subtitle track info from a BaseItem.

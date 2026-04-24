@@ -4,7 +4,7 @@ Le préfixe **canonique** est `/JellyFed/v1/`.
 Les anciennes routes `/JellyFed/...` restent exposées comme alias rétrocompatibles pour les peers plus anciens.
 
 **Authentification :** header `Authorization: Bearer <token>` sur les routes protégées.
-Le token est soit l'`AccessToken` per-peer (post auto-registration), soit le `FederationToken` global (bootstrap).
+Le token est soit l'`AccessToken` per-peer (si un échange explicite a eu lieu), soit le `FederationToken` global (bootstrap / setup manuel).
 
 ---
 
@@ -84,7 +84,8 @@ Sert une image d'item (poster ou backdrop). Utilisé quand `JellyfinApiKey` n'es
 
 ### `POST /JellyFed/v1/peer/register`
 
-Enregistrement d'une instance distante. Appelé automatiquement après chaque sync (auto-registration bidirectionnelle).
+Handshake hérité pour échange optionnel d'un `AccessToken` per-peer.
+En v1, **cet endpoint ne crée plus de peer automatiquement** : un admin doit toujours ajouter le peer manuellement côté UI.
 
 **Body :**
 ```json
@@ -96,7 +97,8 @@ Enregistrement d'une instance distante. Appelé automatiquement après chaque sy
 ```
 
 **Réponses :**
-- `200 {"status": "ok", "accessToken": "xyz..."}` — peer enregistré. Stocker `accessToken` pour tous les appels futurs vers cette instance.
+- `200 {"status": "ok", "accessToken": "xyz..."}` — le peer existe déjà côté cible, un token per-peer peut être utilisé pour les appels futurs
+- `200 {"status": "manual_add_required"}` — aucun peer créé ; l'admin doit l'ajouter manuellement
 - `200 {"status": "blocked"}` — URL dans la blacklist
 - `400` — champs manquants
 - `503` — config indisponible
@@ -209,6 +211,7 @@ Peers configurés avec statut online/offline.
 **Réponse 200 :**
 ```json
 {
+  "selfDiscoverable": true,
   "peers": [
     {
       "name": "instance-b",
@@ -219,6 +222,80 @@ Peers configurés avec statut online/offline.
       "version": "0.1.0",
       "movieCount": 3,
       "seriesCount": 3
+    }
+  ]
+}
+```
+
+---
+
+### `GET /JellyFed/v1/discovery`
+
+Annonce de discovery visible uniquement par les **direct peers** authentifiés.
+
+- `self` décrit cette instance (`discoverable=true|false`)
+- `directPeers` contient **uniquement** les peers directs discoverable connus, jamais les peers déjà découverts
+- profondeur conceptuelle limitée à deux sauts : pas de mesh/gossip récursif
+- alias legacy conservé pendant la transition : `GET /JellyFed/discovery`
+
+**Réponse 200 :**
+```json
+{
+  "self": {
+    "name": "instance-a",
+    "url": "https://a.example.com",
+    "federationToken": "token-a",
+    "version": "0.1.0",
+    "discoverable": true
+  },
+  "directPeers": [
+    {
+      "name": "instance-c",
+      "url": "https://c.example.com",
+      "federationToken": "token-c",
+      "version": "0.1.0",
+      "discoverable": true
+    }
+  ]
+}
+```
+
+---
+
+### `GET /JellyFed/v1/peers/details`
+
+Payload complet pour l'onglet admin **Peers**.
+
+- `peers` = peers directs configurés
+- `discoveredPeers` = suggestions admin-visibles (jamais synchronisées tant qu'elles ne sont pas ajoutées)
+- `selfDiscoverable` = état du toggle local discoverable / invisible
+- alias legacy conservé pendant la transition : `GET /JellyFed/peers/details`
+
+**Réponse 200 (extrait) :**
+```json
+{
+  "selfDiscoverable": true,
+  "lastGlobalSyncAt": "2026-04-15T20:00:00Z",
+  "peers": [
+    {
+      "name": "instance-b",
+      "url": "https://peer-b.example.com",
+      "enabled": true,
+      "syncMovies": true,
+      "syncSeries": true,
+      "syncAnime": true,
+      "online": true,
+      "lastSyncStatus": "ok"
+    }
+  ],
+  "discoveredPeers": [
+    {
+      "name": "instance-c",
+      "url": "https://peer-c.example.com",
+      "federationToken": "token-c",
+      "sourcePeerName": "instance-b",
+      "hopCount": 2,
+      "lastDiscoveredAt": "2026-04-15T20:03:00Z"
     }
   ]
 }
@@ -343,7 +420,7 @@ Sync inline pour un seul peer. Exécute `FederationSyncTask.SyncPeerAsync(peer, 
 
 ### `POST /JellyFed/v1/peer/{name}/remove`
 
-Retire définitivement un peer : purge des `.strm`, révocation de `AccessToken` (les prochaines requêtes du peer retournent 401), ajout de son URL dans `BlockedPeerUrls` pour bloquer l'auto-registration, et retrait de `config.Peers`.
+Retire définitivement un peer : purge des `.strm`, révocation de `AccessToken` (les prochaines requêtes du peer retournent 401), ajout de son URL dans `BlockedPeerUrls` pour la masquer des suggestions de discovery, et retrait de `config.Peers`.
 
 **Réponse 200 :** `{ "status": "ok", "deletedMovies": N, "deletedSeries": N, "blockedUrl": "..." }`
 

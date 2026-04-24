@@ -8,7 +8,7 @@
 | 1 — API catalogue | ✅ | 0.1.0.2 |
 | 2 — Sync + .strm | ✅ | 0.1.0.3 |
 | 3 — Gestion peers (base) | ✅ | 0.1.0.4 |
-| 3b — Auto-registration bidirectionnelle | ✅ | 0.1.0.6 |
+| 3b — Échange optionnel de token per-peer (`/peer/register`) | ✅ | 0.1.0.6 |
 | 3c — Blacklist peers | ✅ | 0.1.0.7 |
 | 3d — UI : Blocked Peers, Sync Now, Catalogue stats | ✅ | 0.1.0.8 |
 | 3e — Tokens d'accès par peer (révocation) | ✅ | 0.1.0.9 |
@@ -19,6 +19,7 @@
 | 4c — HTTPS X-Forwarded-Proto + images natives | ✅ | 0.1.0.13 |
 | 4d — Codec info NFO + seeking + pistes audio/sous-titres | ✅ | 0.1.0.14 |
 | 4e — UI peers avancée + layout par peer + anime roots | ✅ | 0.1.0.15 |
+| 4f — Discovery/admin-control v1 (manual add only) | ✅ | 0.1.0.16 |
 | 5a — Versioning config + manifest | 🔜 | 0.1.0.16 |
 | 5b — Versioning API `/JellyFed/v1/` | 🔜 | 0.1.0.17 |
 | 5c — Migration legacy layout + gel du contrat disque | 🔜 | 0.1.0.18 |
@@ -27,7 +28,7 @@
 | 5f — Tests d'intégration + hardening | 🔜 | 0.1.0.21 |
 | **v1.0.0 — Release stable (architecture figée)** | 🎯 | **1.0.0** |
 | 6 — UI settings refonte | Post-v1 | v1.1 |
-| 7 — Peer-of-peer discovery (FEAT-03) | Post-v1 | v1.2 |
+| 7 — Discovery étendue / gossip récursif (FEAT-03++) | Post-v1 | v1.2 |
 | 8 — Recall + suppression propagée (FEAT-04/05) | Post-v1 | v1.3 |
 | 9 — Distribution publique | Post-v1 | v1.x |
 
@@ -48,7 +49,7 @@ P5  Tag <studio> peer + fix SRT BUG-05 (v0.1.0.20)    — format NFO final
 P6  Tests d'intégration + hardening (v0.1.0.21)       — validation migrations
 ```
 
-Post-v1 (non-breaking, safe à ajouter en v1.x) : UI refonte, peer-of-peer discovery, recall, suppression propagée, distribution publique.
+Post-v1 (non-breaking, safe à ajouter en v1.x) : UI refonte, discovery plus riche au-delà de 2 sauts, recall, suppression propagée, distribution publique.
 
 ---
 
@@ -128,13 +129,14 @@ Post-v1 (non-breaking, safe à ajouter en v1.x) : UI refonte, peer-of-peer disco
 - Après que A supprime B, appeler `GET /JellyFed/v1/catalog` sur A avec l'ancien token de B
 - **Critère de succès :** `401 Unauthorized`
 
-#### TEST-03 — Auto-registration bidirectionnelle
+#### TEST-03 — Discovery admin contrôlée (manual add only)
 **À vérifier :**
 - A configure B manuellement
-- A effectue une sync
-- B voit A apparaître automatiquement dans sa liste de peers
-- B est activé et synchronise les films de A au prochain cycle
-- **Critère de succès :** A visible dans les peers de B, sync de B vers A fonctionnelle
+- A ouvre l'onglet Peers ou attend le refresh de discovery
+- A voit apparaître les peers directs discoverable de B dans la section "Discovered peers"
+- Cliquer "Add manually" pré-remplit le formulaire, puis l'ajout crée un vrai direct peer
+- Aucun peer n'est créé automatiquement côté B ou côté A sans validation admin
+- **Critère de succès :** suggestion visible, ajout manuel fonctionne, aucune auto-sync sans approbation
 
 ### Images & URLs
 
@@ -211,14 +213,20 @@ Post-v1 (non-breaking, safe à ajouter en v1.x) : UI refonte, peer-of-peer disco
 ---
 
 ### FEAT-03 — Peer-of-peer discovery / gossip (P4)
-**Contexte :** Si A est peer avec B et C, B et C ne se connaissent pas.
-**Comportement :**
-- Option `SharePeers` dans la config (désactivé par défaut)
-- Lors de la sync, A envoie à B la liste de ses autres peers (C)
-- B les ajoute en "pending" — l'admin approuve ou auto-approve si configuré
-- Propagation limitée à 1 hop
+**Statut :** tranche v1 de base implémentée.
 
-**Endpoints :** `GET /JellyFed/v1/peers` → déjà disponible. `POST /JellyFed/v1/peer/register` → déjà disponible.
+**Disponible maintenant :**
+- `GET /JellyFed/v1/discovery` (alias legacy `GET /JellyFed/discovery`) pour partager l'instance courante + ses peers directs discoverable
+- `DiscoveredPeers` côté config/UI pour afficher des suggestions séparées des peers directs
+- `Discoverable` pour rendre une instance visible ou invisible aux peers de peers
+- ajout **manuel uniquement** depuis une suggestion
+- profondeur limitée à **deux sauts conceptuels** ; aucun mesh récursif
+
+**Restant post-v1 :**
+- relai multi-source / multi-chemins
+- agrégation de plusieurs sources pour une même suggestion
+- heuristiques de confiance / auto-approve éventuelles
+- propagation au-delà de deux sauts si elle reste sûre et contrôlable
 
 ---
 

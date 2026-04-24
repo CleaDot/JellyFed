@@ -109,10 +109,22 @@ public class PeerHeartbeatService : IHostedService, IDisposable
                 if (info is not null)
                 {
                     status.MarkOnline(info.Version, status.MovieCount, status.SeriesCount);
+
+                    var discovery = await _peerClient.GetDiscoveryAsync(peer, cancellationToken)
+                        .ConfigureAwait(false);
+                    if (discovery?.Self is not null)
+                    {
+                        status.Discoverable = discovery.Self.Discoverable;
+                        if (!string.IsNullOrWhiteSpace(discovery.Self.Version))
+                        {
+                            status.Version = discovery.Self.Version;
+                        }
+                    }
+
                     _logger.LogDebug(
                         "JellyFed heartbeat: {PeerName} online (v{Version}, route={Route}).",
                         peer.Name,
-                        info.Version,
+                        status.Version,
                         info.PreferredRoutePrefix);
                 }
                 else

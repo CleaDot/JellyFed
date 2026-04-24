@@ -48,10 +48,13 @@ Jellyfin.Plugin.JellyFed/
   Configuration/
     PluginConfiguration.cs         Paramètres : SchemaVersion, InstanceId, Peers[],
                                    FederationToken, LibraryPath, SyncIntervalHours,
-                                   SelfUrl, SelfName, JellyfinApiKey, BlockedPeerUrls[]
+                                   SelfUrl, SelfName, Discoverable, JellyfinApiKey,
+                                   BlockedPeerUrls[], DiscoveredPeers[]
     SchemaMigrator.cs              Migration config + manifest vers le schéma courant
-    PeerConfiguration.cs           Un peer : Name, Url, FederationToken, AccessToken,
-                                   Enabled, SyncMovies, SyncSeries, SyncAnime
+    PeerConfiguration.cs           Un peer : Name, Url, FederationToken, DiscoveryToken,
+                                   AccessToken, Enabled, SyncMovies, SyncSeries, SyncAnime
+    DiscoveredPeerConfiguration.cs Suggestion admin-visible : Name, Url, FederationToken,
+                                   SourcePeerName, HopCount, LastDiscoveredAt
     configPage.html                Page admin Jellyfin (JS vanilla, 4 onglets :
                                    Readme / Settings / Peers / Danger Zone)
 
@@ -68,6 +71,8 @@ Jellyfin.Plugin.JellyFed/
       MediaStreamInfoDto.cs        Une piste audio ou sous-titre (Type, Codec, Language, ...)
       PeerDto.cs / PeersResponseDto.cs
       PeerDetailDto.cs / PeerDetailsResponseDto.cs   (onglet Peers)
+      DiscoveryPeerDto.cs / DiscoveryResponseDto.cs  (discovery inter-peers)
+      DiscoveredPeerDto.cs                           (suggestions admin)
       PeerSyncResultDto.cs                           (résultat d'un sync par peer)
       AddPeerRequestDto.cs / UpdatePeerRequestDto.cs (CRUD par peer)
       RegisterPeerRequestDto.cs / RegisterPeerResponseDto.cs
@@ -106,7 +111,6 @@ FederationSyncTask.ExecuteAsync() :
         - Déjà dans manifest → UpdateMovieNfoAsync() pour rafraîchir codec/tracks, skip
         - Sinon → StrmWriter.WriteMovieAsync() ou WriteSeriesAsync()
           • Série → GET /JellyFed/v1/catalog/series/:id/seasons → .strm par épisode
-     c. POST /JellyFed/v1/peer/register (auto-registration si SelfUrl configuré)
   3. Pruning : clés manifest absentes → StrmWriter.DeleteItem()
   4. SaveManifest() → .jellyfed-manifest.json
   5. QueueLibraryScan() → Jellyfin indexe les nouveaux/modifiés .strm
@@ -118,7 +122,9 @@ FederationSyncTask.ExecuteAsync() :
 PeerHeartbeatService : toutes les 5 min
   GET /JellyFed/v1/system/info sur chaque peer
     ↳ fallback automatique `/JellyFed/system/info` puis `/JellyFed/health` pour les anciennes versions
-  → écrit résultat dans .jellyfed-peers.json (online, version, movieCount, seriesCount)
+  GET /JellyFed/v1/discovery sur chaque peer
+    ↳ alias legacy `/JellyFed/discovery` gardé pendant la transition
+  → écrit résultat dans .jellyfed-peers.json (online, version, movieCount, seriesCount, discoverable)
 ```
 
 ### `ILibraryManager` — bibliothèque locale
@@ -150,8 +156,7 @@ PeerHeartbeatService : toutes les 5 min
        - .nfo par épisode avec codec + pistes
 6. Pruning : clés manifest non vues → StrmWriter.DeleteItem()
 7. SaveManifest()
-8. POST /JellyFed/v1/peer/register → peer-b ajoute cette instance en retour
-9. QueueLibraryScan()
+8. QueueLibraryScan()
 ```
 
 ---
@@ -202,7 +207,7 @@ Sans les infos codec dans le NFO : Jellyfin suppose direct-play → browser reç
 
 À la configuration initiale, A présente le token global de B. `FederationAuthFilter` vérifie que le Bearer correspond au `FederationToken` global.
 
-### Tokens d'accès par peer (post auto-registration)
+### Tokens d'accès par peer (échange optionnel)
 
 ```
 1. A POST /JellyFed/v1/peer/register → B génère AccessToken("xyz") pour A → retourné
@@ -222,14 +227,15 @@ Sans les infos codec dans le NFO : Jellyfin suppose direct-play → browser reç
 
 ---
 
-## Auto-registration bidirectionnelle
+## Discovery v1 (manual add only)
 
 ```
 1. A configure B manuellement (URL + token de B)
-2. A synce depuis B
-3. A POST /JellyFed/v1/peer/register { name: "A", url: "...", federationToken: "token-A" }
-4. B vérifie blacklist, ajoute A (Enabled=true, SyncMovies=true, SyncSeries=true)
-5. Prochain cycle de B → B synce depuis A
+2. A appelle GET /JellyFed/v1/discovery sur B
+3. B renvoie : self + ses peers directs discoverable connus
+4. A stocke ces peers dans DiscoveredPeers comme suggestions admin-visibles
+5. Un admin clique "Add manually" sur une suggestion → création d'un vrai direct peer
+6. Les peers déjà découverts ne sont jamais relayés à nouveau : profondeur limitée à deux sauts
 ```
 
 ---

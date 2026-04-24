@@ -43,13 +43,17 @@ Instance A installe JellyFed. Elle se connecte à l'Instance B. Le plugin synchr
 ### Gestion des peers
 - Endpoint handshake `GET /JellyFed/v1/system/info` (version, protocolVersion, schemaVersion, instanceId, capabilities)
 - Onglet dédié « Peers » dans la page de configuration (Readme / Settings / Peers / Danger Zone)
+- Séparation claire entre **direct peers** (configurés, synchronisables) et **discovered peers** (suggestions uniquement)
 - Cartes par peer avec statut online/offline, version, dernière sync (badge ok/failed/never + erreur), durée
 - Compteurs synced par peer : catalogue distant (films / séries) vs local (films / séries / anime) + disque utilisé
 - Toggles par peer : Enabled, Films, Séries, Anime (PATCH live sans bouton Save)
 - Actions fine-grained : Resync ce peer, Purge .strm, Edit (nom / URL / token, avec renommage des dossiers), Remove (purge + révocation token + blacklist)
-- Ajout de peer via modal avec health-check préalable
-- Auto-registration bidirectionnelle + heartbeat toutes les 5 minutes
-- Blacklist automatique des peers supprimés (dépose les URLs dans Blocked Peers)
+- Ajout de peer via modal avec health-check préalable, y compris pré-remplissage depuis une suggestion découverte
+- Discovery v1 limitée à **deux sauts conceptuels** : un peer direct peut suggérer ses peers directs discoverable, sans mesh récursif
+- Mode **manual add only** : aucune suggestion ne déclenche une sync tant qu'un admin n'a pas ajouté le peer explicitement
+- Toggle **Discoverable / Invisible** pour contrôler si cette instance peut apparaître dans les suggestions second-hop
+- Heartbeat toutes les 5 minutes + refresh admin pour maintenir l'état de discovery à jour
+- Blacklist automatique des peers supprimés (masque l'URL dans les suggestions tant qu'elle n'est pas débloquée)
 
 ### Sécurité
 - Token de fédération auto-généré au démarrage (non éditable)
@@ -98,11 +102,12 @@ Federation Token : <auto-généré>
 Instance ID      : <auto-généré, stable>
 Instance Name    : mon-serveur
 Self URL         : https://mon-jellyfin.example.com
+Discoverable     : true
 Sync Interval    : 6 (heures)
 Library Path     : <auto-défini>
 ```
 
-Ajouter un peer (URL + token du peer distant) et cliquer Save.
+Ajouter un peer direct (URL + token du peer distant) depuis l'onglet **Peers**. Les peers découverts restent des suggestions jusqu'à ajout manuel.
 
 ### Bibliothèques Jellyfin
 

@@ -388,21 +388,7 @@ public class FederationSyncTask : IScheduledTask
                 result.SkippedMovies,
                 result.SkippedSeries);
 
-            // Auto-registration: announce self so the peer can add us back.
-            var selfUrl = config.SelfUrl;
-            if (!string.IsNullOrWhiteSpace(selfUrl))
-            {
-                var selfName = string.IsNullOrWhiteSpace(config.SelfName)
-                    ? Plugin.Instance!.Name
-                    : config.SelfName;
-
-                await _peerClient.RegisterOnPeerAsync(
-                    peer,
-                    selfName,
-                    selfUrl,
-                    config.FederationToken,
-                    cancellationToken).ConfigureAwait(false);
-            }
+            // Discovery is suggestion-only in v1. Sync never auto-registers this instance back on the peer.
         }
         catch (OperationCanceledException)
         {
