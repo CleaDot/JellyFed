@@ -95,6 +95,14 @@ Pourquoi avant v1 : l'ajout de `sources.json` modifie la structure du layout (no
 
 **Contrat posé :** `sources.json` est la source de vérité pour les sources alternatives. Absence = une seule source (le peer qui a produit le `.strm`).
 
+**État de la slice `feature/v1-sources` :**
+- le manifest est déjà basculé vers l'item logique + `sources[]` ;
+- `sources.json` est généré à côté des items ;
+- JellyFed sait promouvoir une autre source primaire quand un peer disparaît ;
+- le fallback visible passe par `<studio>` / `<tag>` dans les NFO.
+
+**Ce qui reste explicitement hors de cette slice :** le vrai branchement `IMediaSourceProvider` côté player. Le groundwork disque + provenance est prêt, mais Jellyfin continue pour l'instant à ne voir que la source primaire matérialisée.
+
 ### 5. Tag peer dans NFO (v0.1.0.19, combiné avec fix SRT)
 
 Ajouter `<studio>JellyFed:{PeerName}</studio>` dans chaque `.nfo` généré. Permet de filtrer nativement par peer dans l'interface Jellyfin (la propriété "Studios" est exposée dans les filtres standards).
@@ -102,6 +110,11 @@ Ajouter `<studio>JellyFed:{PeerName}</studio>` dans chaque `.nfo` généré. Per
 Pourquoi avant v1 : ajouter le tag après v1 = rewrite forcé de tous les NFO existants au premier sync post-upgrade. Faisable techniquement via `UpdateMovieNfoAsync` (déjà en place), mais impose un passage unique coûteux et une fenêtre où les anciens items n'ont pas encore le tag. Préférable de l'avoir dès la v1.
 
 **Contrat posé :** le format des `<studio>` dans les NFO générés inclut `JellyFed:{PeerName}`.
+
+Dans la slice provenance, ce contrat est élargi avec :
+- `<tag>JellyFed:primary:{PeerName}</tag>` ;
+- `<tag>JellyFed:source:{PeerName}</tag>` ;
+- `<tag>JellyFed:multi-source</tag>` quand applicable.
 
 ### 6. Fix SRT/ASS soft-sub (BUG-05, v0.1.0.19)
 

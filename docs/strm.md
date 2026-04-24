@@ -23,6 +23,7 @@ Le token de fédération dans l'URL permet au serveur source d'authentifier la r
     Oppenheimer (2023)/
       Oppenheimer (2023).strm
       Oppenheimer (2023).nfo
+      sources.json
       poster.jpg
       fanart.jpg
 ```
@@ -34,6 +35,7 @@ Le token de fédération dans l'URL permet au serveur source d'authentifier la r
   Series/
     Breaking Bad (2008)/
       tvshow.nfo
+      sources.json
       poster.jpg
       fanart.jpg
       Season 01/
@@ -100,6 +102,15 @@ Jellyfin lit les `.nfo` au format Kodi. Les métadonnées sont stockées localem
 La section `<fileinfo><streamdetails>` est critique : sans elle, Jellyfin ne connaît pas le codec et suppose que le navigateur peut lire le format directement → fatal player error pour les fichiers MKV/HEVC.
 
 Les tags `jellyfed_peer` et `jellyfed_id` sont des extensions custom ignorées par Jellyfin, utilisées par JellyFed pour le suivi manifest.
+
+Depuis la slice v1 provenance/multi-source, JellyFed ajoute aussi :
+
+- `<studio>JellyFed:peer-a</studio>` pour chaque source connue ;
+- `<tag>JellyFed:primary:peer-a</tag>` pour la source actuellement matérialisée ;
+- `<tag>JellyFed:source:peer-b</tag>` pour toutes les sources ;
+- `<tag>JellyFed:multi-source</tag>` si plusieurs peers exposent le même TMDB ID.
+
+Ça sert de fallback visible tant que le player ne propose pas encore un vrai sélecteur multi-source natif.
 
 **Épisode NFO (`S01E01 - Pilot.nfo`) :**
 ```xml
@@ -193,6 +204,41 @@ L'URL source dépend de la config :
 Lors de chaque sync, JellyFed met à jour pour les items déjà en manifest :
 - **URL du `.strm`** : mise à jour si l'URL a changé (migration de format, changement de token)
 - **`.nfo`** : toujours réécrit avec les dernières infos codec/pistes
+- **`sources.json`** : réécrit avec la source primaire courante + toutes les sources alternatives connues
+
+`sources.json` ressemble à ceci :
+
+```json
+{
+  "schemaVersion": 1,
+  "itemKey": "tmdb:872585",
+  "itemType": "Movie",
+  "primaryPeerName": "instance-b",
+  "primaryJellyfinId": "abc123def456",
+  "path": "/data/jellyfin/data/jellyfed-library/Films/instance-b/Oppenheimer (2023)",
+  "syncedAt": "2026-04-24T18:00:00Z",
+  "sources": [
+    {
+      "peerName": "instance-b",
+      "jellyfinId": "abc123def456",
+      "streamUrl": "https://peer-b/JellyFed/stream/abc123def456?token=...",
+      "videoCodec": "hevc",
+      "audioCodec": "eac3",
+      "width": 1920,
+      "height": 1080
+    },
+    {
+      "peerName": "instance-c",
+      "jellyfinId": "xyz987",
+      "streamUrl": "https://peer-c/JellyFed/stream/xyz987?token=...",
+      "videoCodec": "h264",
+      "audioCodec": "aac",
+      "width": 1280,
+      "height": 720
+    }
+  ]
+}
+```
 
 ⚠️ Un rescan de bibliothèque dans Jellyfin est nécessaire après la sync pour que les nouvelles infos du `.nfo` soient prises en compte.
 
@@ -201,9 +247,14 @@ Lors de chaque sync, JellyFed met à jour pour les items déjà en manifest :
 ## Pruning (suppression automatique)
 
 Lors d'une resync, si un item disparaît du catalogue du peer :
-1. JellyFed détecte l'absence (clé manifest non vue)
-2. `StrmWriter.DeleteItem()` → supprime le dossier (`.strm`, `.nfo`, artwork)
-3. `RemoveLibraryItems()` → retire l'item de la DB Jellyfin sans attendre le prochain scan
-4. L'item disparaît de l'interface Jellyfin
+1. JellyFed détecte l'absence de la **source** du peer dans `sources[]`
+2. si d'autres sources restent :
+   - le manifest garde l'item logique ;
+   - une autre source devient primaire si nécessaire ;
+   - `sources.json` et les marqueurs NFO sont rafraîchis ;
+3. si c'était la dernière source :
+   - `StrmWriter.DeleteItem()` supprime le dossier (`.strm`, `.nfo`, artwork, `sources.json`) ;
+   - `RemoveLibraryItems()` retire l'item de la DB Jellyfin sans attendre le prochain scan ;
+4. l'item disparaît seulement quand la dernière source a disparu.
 
 Note : si le peer était temporairement hors ligne lors d'une sync, ses items ne sont pas prunés (le catalogue vide = peer injoignable, pas de pruning). La grace period est implicite par la détection d'absence dans le catalogue retourné.

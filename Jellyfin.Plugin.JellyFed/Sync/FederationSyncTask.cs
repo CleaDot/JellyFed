@@ -3,10 +3,12 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Data.Enums;
 using Jellyfin.Database.Implementations.Enums;
+using Jellyfin.Plugin.JellyFed.Api.Dto;
 using Jellyfin.Plugin.JellyFed.Configuration;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
@@ -36,10 +38,10 @@ public class FederationSyncTask : IScheduledTask
     /// <summary>
     /// Initializes a new instance of the <see cref="FederationSyncTask"/> class.
     /// </summary>
-    /// <param name="libraryManager">Instance of <see cref="ILibraryManager"/>.</param>
-    /// <param name="peerClient">Instance of <see cref="PeerClient"/>.</param>
-    /// <param name="strmWriter">Instance of <see cref="StrmWriter"/>.</param>
-    /// <param name="logger">Instance of the <see cref="ILogger{FederationSyncTask}"/> interface.</param>
+    /// <param name="libraryManager">Jellyfin library manager.</param>
+    /// <param name="peerClient">HTTP client for remote JellyFed peers.</param>
+    /// <param name="strmWriter">Materializer for local .strm/NFO/source files.</param>
+    /// <param name="logger">Logger instance.</param>
     public FederationSyncTask(
         ILibraryManager libraryManager,
         PeerClient peerClient,
@@ -98,8 +100,11 @@ public class FederationSyncTask : IScheduledTask
         var localTmdbIds = BuildLocalTmdbIds(config);
         var states = PeerStateStore.Load(libraryPath);
 
-        var allSeenMovieKeys = new HashSet<string>(StringComparer.Ordinal);
-        var allSeenSeriesKeys = new HashSet<string>(StringComparer.Ordinal);
+        var seenMovieSources = new HashSet<string>(StringComparer.Ordinal);
+        var seenSeriesSources = new HashSet<string>(StringComparer.Ordinal);
+        var peersEligibleForPrune = new HashSet<string>(
+            config.Peers.Where(static peer => !peer.Enabled).Select(static peer => peer.Name),
+            StringComparer.OrdinalIgnoreCase);
 
         int totalPeers = config.Peers.Count;
         int peerIndex = 0;
@@ -120,11 +125,15 @@ public class FederationSyncTask : IScheduledTask
                 config,
                 manifest,
                 localTmdbIds,
-                allSeenMovieKeys,
-                allSeenSeriesKeys,
+                seenMovieSources,
+                seenSeriesSources,
                 cancellationToken).ConfigureAwait(false);
 
-            // Persist per-peer status so the admin UI reflects success/failure instantly.
+            if (peerResult.CanPrune)
+            {
+                peersEligibleForPrune.Add(peer.Name);
+            }
+
             if (!states.TryGetValue(peer.Name, out var status))
             {
                 status = new PeerStatus();
@@ -144,9 +153,10 @@ public class FederationSyncTask : IScheduledTask
             progress.Report((double)peerIndex / Math.Max(1, totalPeers) * 90);
         }
 
-        // Prune globally: any manifest entry whose key wasn't seen in any enabled peer's pass.
-        PruneDeleted(manifest.Movies, allSeenMovieKeys);
-        PruneDeleted(manifest.Series, allSeenSeriesKeys);
+        await PruneDeletedAsync(manifest.Movies, seenMovieSources, peersEligibleForPrune, config, "Movie", cancellationToken)
+            .ConfigureAwait(false);
+        await PruneDeletedAsync(manifest.Series, seenSeriesSources, peersEligibleForPrune, config, "Series", cancellationToken)
+            .ConfigureAwait(false);
 
         ManifestStore.Save(libraryPath, manifest);
         PeerStateStore.Save(libraryPath, states);
@@ -161,11 +171,8 @@ public class FederationSyncTask : IScheduledTask
 
     /// <summary>
     /// Runs the full sync pipeline for a single peer and returns a summary result.
-    /// Used by <see cref="ExecuteAsync"/> and by the admin <c>/peer/{name}/sync</c> endpoint.
-    /// Callers that invoke this independently are responsible for persisting the manifest
-    /// and peer state afterwards (see <see cref="SyncPeerAsync"/>).
     /// </summary>
-    /// <param name="peer">The peer to sync.</param>
+    /// <param name="peer">Peer to synchronize.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Result of the sync attempt.</returns>
     public async Task<PeerSyncResult> SyncPeerAsync(
@@ -183,23 +190,26 @@ public class FederationSyncTask : IScheduledTask
         var localTmdbIds = BuildLocalTmdbIds(config);
         var states = PeerStateStore.Load(config.LibraryPath);
 
-        // For single-peer sync, only consider this peer's keys when pruning so we never
-        // touch entries belonging to other peers.
-        var seenMovieKeys = new HashSet<string>(StringComparer.Ordinal);
-        var seenSeriesKeys = new HashSet<string>(StringComparer.Ordinal);
+        var seenMovieSources = new HashSet<string>(StringComparer.Ordinal);
+        var seenSeriesSources = new HashSet<string>(StringComparer.Ordinal);
 
         var result = await SyncSinglePeerAsync(
             peer,
             config,
             manifest,
             localTmdbIds,
-            seenMovieKeys,
-            seenSeriesKeys,
+            seenMovieSources,
+            seenSeriesSources,
             cancellationToken).ConfigureAwait(false);
 
-        // Prune only this peer's stale entries.
-        result.Pruned += PruneDeletedForPeer(manifest.Movies, seenMovieKeys, peer.Name);
-        result.Pruned += PruneDeletedForPeer(manifest.Series, seenSeriesKeys, peer.Name);
+        if (result.CanPrune)
+        {
+            var prunePeers = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { peer.Name };
+            result.Pruned += await PruneDeletedForPeerAsync(manifest.Movies, seenMovieSources, prunePeers, config, "Movie", cancellationToken)
+                .ConfigureAwait(false);
+            result.Pruned += await PruneDeletedForPeerAsync(manifest.Series, seenSeriesSources, prunePeers, config, "Series", cancellationToken)
+                .ConfigureAwait(false);
+        }
 
         if (!states.TryGetValue(peer.Name, out var status))
         {
@@ -229,8 +239,8 @@ public class FederationSyncTask : IScheduledTask
         PluginConfiguration config,
         Manifest manifest,
         HashSet<string> localTmdbIds,
-        HashSet<string> seenMovieKeys,
-        HashSet<string> seenSeriesKeys,
+        HashSet<string> seenMovieSources,
+        HashSet<string> seenSeriesSources,
         CancellationToken cancellationToken)
     {
         var sw = Stopwatch.StartNew();
@@ -250,6 +260,7 @@ public class FederationSyncTask : IScheduledTask
                 return result;
             }
 
+            result.CanPrune = true;
             var peerSeg = StrmWriter.SanitizePeerFolderSegment(peer.Name);
 
             foreach (var item in catalog.Items)
@@ -257,9 +268,9 @@ public class FederationSyncTask : IScheduledTask
                 cancellationToken.ThrowIfCancellationRequested();
 
                 var key = ManifestKey(item.TmdbId, peer.Name, item.JellyfinId);
+                var source = BuildSource(item, peer.Name);
                 var isAnime = CatalogItemClassifier.IsAnime(item);
 
-                // Skip items already owned locally (same TMDB ID in local library).
                 if (!string.IsNullOrEmpty(item.TmdbId) && localTmdbIds.Contains(item.TmdbId))
                 {
                     if (item.Type == "Movie")
@@ -274,9 +285,6 @@ public class FederationSyncTask : IScheduledTask
                     continue;
                 }
 
-                // Honor per-peer type toggles. Anime items require SyncAnime in addition to the
-                // Movies/Series toggle so admins can keep syncing normal series while filtering
-                // out anime (or vice versa).
                 if (isAnime && !peer.SyncAnime)
                 {
                     continue;
@@ -293,49 +301,46 @@ public class FederationSyncTask : IScheduledTask
                         continue;
                     }
 
-                    seenMovieKeys.Add(key);
-                    if (manifest.Movies.TryGetValue(key, out var existingMovieEntry))
+                    seenMovieSources.Add(SourceKey(key, peer.Name));
+                    var now = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+
+                    if (!manifest.Movies.TryGetValue(key, out var entry))
                     {
-                        if (!string.IsNullOrEmpty(item.StreamUrl))
+                        entry = new ManifestEntry
                         {
-                            var folderName = Path.GetFileName(existingMovieEntry.Path);
-                            var strmPath = Path.Combine(existingMovieEntry.Path, folderName + ".strm");
-                            if (File.Exists(strmPath))
-                            {
-                                var current = await File.ReadAllTextAsync(strmPath, cancellationToken)
-                                    .ConfigureAwait(false);
-                                if (!string.Equals(current.Trim(), item.StreamUrl, StringComparison.Ordinal))
-                                {
-                                    await File.WriteAllTextAsync(strmPath, item.StreamUrl, System.Text.Encoding.UTF8, cancellationToken)
-                                        .ConfigureAwait(false);
-                                    _logger.LogDebug("JellyFed sync: updated STRM URL for '{Title}'", item.Title);
-                                }
-                            }
-                        }
+                            PeerName = peer.Name,
+                            JellyfinId = item.JellyfinId,
+                            SyncedAt = now,
+                            Sources = [source]
+                        };
 
-                        if (Directory.Exists(existingMovieEntry.Path))
-                        {
-                            await _strmWriter.UpdateMovieNfoAsync(existingMovieEntry.Path, item, peer, cancellationToken)
-                                .ConfigureAwait(false);
-                        }
+                        var movieContentRoot = Path.Combine(movieTypeRoot, peerSeg);
+                        Directory.CreateDirectory(movieContentRoot);
+                        entry.Path = await _strmWriter.WriteMovieAsync(movieContentRoot, item, peer, entry, key, cancellationToken)
+                            .ConfigureAwait(false);
 
-                        result.SkippedMovies++;
+                        manifest.Movies[key] = entry;
+                        result.AddedMovies++;
                         continue;
                     }
 
-                    var movieContentRoot = Path.Combine(movieTypeRoot, peerSeg);
-                    Directory.CreateDirectory(movieContentRoot);
-                    var folderPath = await _strmWriter.WriteMovieAsync(movieContentRoot, item, peer, cancellationToken)
-                        .ConfigureAwait(false);
+                    UpsertSource(entry, source);
+                    EnsurePrimarySource(entry, keepCurrentIfAvailable: true);
+                    entry.SyncedAt = now;
 
-                    manifest.Movies[key] = new ManifestEntry
+                    if (string.Equals(entry.PeerName, peer.Name, StringComparison.OrdinalIgnoreCase) &&
+                        string.Equals(entry.JellyfinId, item.JellyfinId, StringComparison.Ordinal))
                     {
-                        Path = folderPath,
-                        PeerName = peer.Name,
-                        JellyfinId = item.JellyfinId,
-                        SyncedAt = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture)
-                    };
-                    result.AddedMovies++;
+                        await _strmWriter.RewriteMoviePrimaryAsync(entry.Path, item, peer, entry, key, cancellationToken)
+                            .ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        await _strmWriter.RefreshMovieProvenanceAsync(entry.Path, entry, key, cancellationToken)
+                            .ConfigureAwait(false);
+                    }
+
+                    result.SkippedMovies++;
                 }
                 else if (item.Type == "Series" && peer.SyncSeries)
                 {
@@ -348,35 +353,65 @@ public class FederationSyncTask : IScheduledTask
                         continue;
                     }
 
-                    seenSeriesKeys.Add(key);
-                    if (manifest.Series.ContainsKey(key))
+                    seenSeriesSources.Add(SourceKey(key, peer.Name));
+                    var now = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+
+                    if (!manifest.Series.TryGetValue(key, out var entry))
                     {
-                        result.SkippedSeries++;
+                        var seasons = await _peerClient.GetSeasonsAsync(peer, item.JellyfinId, cancellationToken)
+                            .ConfigureAwait(false);
+                        if (seasons is null)
+                        {
+                            _logger.LogWarning("JellyFed sync: failed to fetch seasons for {Title}, skipping.", item.Title);
+                            continue;
+                        }
+
+                        entry = new ManifestEntry
+                        {
+                            PeerName = peer.Name,
+                            JellyfinId = item.JellyfinId,
+                            SyncedAt = now,
+                            Sources = [source]
+                        };
+
+                        var seriesContentRoot = Path.Combine(seriesTypeRoot, peerSeg);
+                        Directory.CreateDirectory(seriesContentRoot);
+                        entry.Path = await _strmWriter.WriteSeriesAsync(seriesContentRoot, item, seasons, peer, entry, key, cancellationToken)
+                            .ConfigureAwait(false);
+
+                        manifest.Series[key] = entry;
+                        result.AddedSeries++;
                         continue;
                     }
 
-                    var seasons = await _peerClient.GetSeasonsAsync(peer, item.JellyfinId, cancellationToken)
-                        .ConfigureAwait(false);
+                    UpsertSource(entry, source);
+                    EnsurePrimarySource(entry, keepCurrentIfAvailable: true);
+                    entry.SyncedAt = now;
 
-                    if (seasons is null)
+                    if (string.Equals(entry.PeerName, peer.Name, StringComparison.OrdinalIgnoreCase) &&
+                        string.Equals(entry.JellyfinId, item.JellyfinId, StringComparison.Ordinal))
                     {
-                        _logger.LogWarning("JellyFed sync: failed to fetch seasons for {Title}, skipping.", item.Title);
-                        continue;
+                        var seasons = await _peerClient.GetSeasonsAsync(peer, item.JellyfinId, cancellationToken)
+                            .ConfigureAwait(false);
+                        if (seasons is not null)
+                        {
+                            await _strmWriter.RewriteSeriesPrimaryAsync(entry.Path, item, seasons, peer, entry, key, cancellationToken)
+                                .ConfigureAwait(false);
+                        }
+                        else
+                        {
+                            _logger.LogWarning("JellyFed sync: failed to refresh seasons for {Title}, keeping previous materialization.", item.Title);
+                            await _strmWriter.RefreshSeriesProvenanceAsync(entry.Path, entry, key, cancellationToken)
+                                .ConfigureAwait(false);
+                        }
+                    }
+                    else
+                    {
+                        await _strmWriter.RefreshSeriesProvenanceAsync(entry.Path, entry, key, cancellationToken)
+                            .ConfigureAwait(false);
                     }
 
-                    var seriesContentRoot = Path.Combine(seriesTypeRoot, peerSeg);
-                    Directory.CreateDirectory(seriesContentRoot);
-                    var folderPath = await _strmWriter.WriteSeriesAsync(seriesContentRoot, item, seasons, peer, cancellationToken)
-                        .ConfigureAwait(false);
-
-                    manifest.Series[key] = new ManifestEntry
-                    {
-                        Path = folderPath,
-                        PeerName = peer.Name,
-                        JellyfinId = item.JellyfinId,
-                        SyncedAt = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture)
-                    };
-                    result.AddedSeries++;
+                    result.SkippedSeries++;
                 }
             }
 
@@ -395,7 +430,7 @@ public class FederationSyncTask : IScheduledTask
             result.Error = "Sync cancelled.";
             throw;
         }
-#pragma warning disable CA1031 // Broad catch to record the error in PeerStatus without crashing the task.
+#pragma warning disable CA1031
         catch (Exception ex)
         {
             result.Error = ex.Message;
@@ -408,51 +443,149 @@ public class FederationSyncTask : IScheduledTask
         return result;
     }
 
-    private void PruneDeleted(Dictionary<string, ManifestEntry> entries, HashSet<string> seenKeys)
+    private async Task<int> PruneDeletedAsync(
+        Dictionary<string, ManifestEntry> entries,
+        HashSet<string> seenSourceKeys,
+        HashSet<string> peersEligibleForPrune,
+        PluginConfiguration config,
+        string itemType,
+        CancellationToken cancellationToken)
     {
-        var toRemove = new List<string>();
-        foreach (var (key, entry) in entries)
-        {
-            if (!seenKeys.Contains(key))
-            {
-                _strmWriter.DeleteItem(entry.Path);
-                toRemove.Add(key);
-            }
-        }
-
-        foreach (var key in toRemove)
-        {
-            entries.Remove(key);
-        }
+        return await PruneEntriesAsync(entries, seenSourceKeys, peersEligibleForPrune, config, itemType, cancellationToken)
+            .ConfigureAwait(false);
     }
 
-    private int PruneDeletedForPeer(
+    private async Task<int> PruneDeletedForPeerAsync(
         Dictionary<string, ManifestEntry> entries,
-        HashSet<string> seenKeys,
-        string peerName)
+        HashSet<string> seenSourceKeys,
+        HashSet<string> peersEligibleForPrune,
+        PluginConfiguration config,
+        string itemType,
+        CancellationToken cancellationToken)
     {
-        var toRemove = new List<string>();
-        foreach (var (key, entry) in entries)
+        return await PruneEntriesAsync(entries, seenSourceKeys, peersEligibleForPrune, config, itemType, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private async Task<int> PruneEntriesAsync(
+        Dictionary<string, ManifestEntry> entries,
+        HashSet<string> seenSourceKeys,
+        HashSet<string> peersEligibleForPrune,
+        PluginConfiguration config,
+        string itemType,
+        CancellationToken cancellationToken)
+    {
+        var removedEntries = 0;
+
+        foreach (var key in entries.Keys.ToList())
         {
-            if (!string.Equals(entry.PeerName, peerName, StringComparison.OrdinalIgnoreCase))
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var entry = entries[key];
+            bool removedAnySource = false;
+            bool removedPrimary = false;
+
+            var sources = entry.Sources.ToList();
+            foreach (var source in sources.ToList())
+            {
+                if (!peersEligibleForPrune.Contains(source.PeerName))
+                {
+                    continue;
+                }
+
+                if (seenSourceKeys.Contains(SourceKey(key, source.PeerName)))
+                {
+                    continue;
+                }
+
+                sources.Remove(source);
+                removedAnySource = true;
+                removedPrimary |= string.Equals(source.PeerName, entry.PeerName, StringComparison.OrdinalIgnoreCase) &&
+                                  string.Equals(source.JellyfinId, entry.JellyfinId, StringComparison.Ordinal);
+            }
+
+            if (!removedAnySource)
             {
                 continue;
             }
 
-            if (!seenKeys.Contains(key))
+            entry.Sources = sources;
+
+            if (entry.Sources.Count == 0)
             {
                 _strmWriter.DeleteItem(entry.Path);
-                toRemove.Add(key);
+                entries.Remove(key);
+                removedEntries++;
+                continue;
+            }
+
+            if (removedPrimary || string.IsNullOrWhiteSpace(entry.PeerName))
+            {
+                EnsurePrimarySource(entry, keepCurrentIfAvailable: false);
+                TryMoveEntryToPrimaryPeerFolder(entry);
+                await RehydrateAfterPrimarySwitchAsync(entry, key, itemType, config, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            else
+            {
+                await RefreshProvenanceAsync(entry, key, itemType, cancellationToken).ConfigureAwait(false);
+            }
+
+            entry.SyncedAt = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+        }
+
+        return removedEntries;
+    }
+
+    private async Task RehydrateAfterPrimarySwitchAsync(
+        ManifestEntry entry,
+        string itemKey,
+        string itemType,
+        PluginConfiguration config,
+        CancellationToken cancellationToken)
+    {
+        if (string.Equals(itemType, "Movie", StringComparison.Ordinal))
+        {
+            var primary = entry.PrimarySource;
+            if (!string.IsNullOrWhiteSpace(primary?.StreamUrl))
+            {
+                await _strmWriter.RewriteMovieStreamAsync(entry.Path, entry, primary.StreamUrl, itemKey, cancellationToken)
+                    .ConfigureAwait(false);
+                return;
+            }
+
+            await _strmWriter.RefreshMovieProvenanceAsync(entry.Path, entry, itemKey, cancellationToken)
+                .ConfigureAwait(false);
+            return;
+        }
+
+        var primaryPeer = config.Peers.FirstOrDefault(peer =>
+            string.Equals(peer.Name, entry.PeerName, StringComparison.OrdinalIgnoreCase));
+
+        if (primaryPeer is not null)
+        {
+            var seasons = await _peerClient.GetSeasonsAsync(primaryPeer, entry.JellyfinId, cancellationToken)
+                .ConfigureAwait(false);
+            if (seasons is not null)
+            {
+                await _strmWriter.RewriteSeriesEpisodeStreamsAsync(entry.Path, seasons, entry, itemKey, cancellationToken)
+                    .ConfigureAwait(false);
+                return;
             }
         }
 
-        foreach (var key in toRemove)
-        {
-            entries.Remove(key);
-        }
-
-        return toRemove.Count;
+        await _strmWriter.RefreshSeriesProvenanceAsync(entry.Path, entry, itemKey, cancellationToken)
+            .ConfigureAwait(false);
     }
+
+    private Task RefreshProvenanceAsync(
+        ManifestEntry entry,
+        string itemKey,
+        string itemType,
+        CancellationToken cancellationToken)
+        => string.Equals(itemType, "Movie", StringComparison.Ordinal)
+            ? _strmWriter.RefreshMovieProvenanceAsync(entry.Path, entry, itemKey, cancellationToken)
+            : _strmWriter.RefreshSeriesProvenanceAsync(entry.Path, entry, itemKey, cancellationToken);
 
     private HashSet<string> BuildLocalTmdbIds(PluginConfiguration pluginConfig)
     {
@@ -482,11 +615,132 @@ public class FederationSyncTask : IScheduledTask
         return result;
     }
 
+    private static ManifestSource BuildSource(CatalogItemDto item, string peerName)
+        => new()
+        {
+            PeerName = peerName,
+            JellyfinId = item.JellyfinId,
+            StreamUrl = item.StreamUrl,
+            Container = item.Container,
+            VideoCodec = item.VideoCodec,
+            AudioCodec = item.AudioCodec,
+            Width = item.Width,
+            Height = item.Height,
+            AddedAt = item.AddedAt,
+            UpdatedAt = item.UpdatedAt,
+            MediaStreams = item.MediaStreams
+        };
+
+    private static void UpsertSource(ManifestEntry entry, ManifestSource source)
+    {
+        var sources = entry.Sources.ToList();
+
+        var existing = sources.FirstOrDefault(s =>
+            string.Equals(s.PeerName, source.PeerName, StringComparison.OrdinalIgnoreCase));
+
+        if (existing is null)
+        {
+            sources.Add(source);
+            entry.Sources = sources;
+            return;
+        }
+
+        existing.JellyfinId = source.JellyfinId;
+        existing.StreamUrl = source.StreamUrl;
+        existing.Container = source.Container;
+        existing.VideoCodec = source.VideoCodec;
+        existing.AudioCodec = source.AudioCodec;
+        existing.Width = source.Width;
+        existing.Height = source.Height;
+        existing.AddedAt = source.AddedAt;
+        existing.UpdatedAt = source.UpdatedAt;
+        existing.MediaStreams = source.MediaStreams;
+        entry.Sources = sources;
+    }
+
+    private static void EnsurePrimarySource(ManifestEntry entry, bool keepCurrentIfAvailable)
+    {
+        if (entry.Sources.Count == 0)
+        {
+            return;
+        }
+
+        if (keepCurrentIfAvailable)
+        {
+            var current = entry.Sources.FirstOrDefault(source =>
+                string.Equals(source.PeerName, entry.PeerName, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(source.JellyfinId, entry.JellyfinId, StringComparison.Ordinal));
+            if (current is not null)
+            {
+                entry.PeerName = current.PeerName;
+                entry.JellyfinId = current.JellyfinId;
+                return;
+            }
+        }
+
+        var preferred = entry.Sources
+            .OrderByDescending(source => SourcePixelCount(source))
+            .ThenByDescending(SourceUpdatedAt)
+            .ThenBy(source => source.PeerName, StringComparer.OrdinalIgnoreCase)
+            .First();
+
+        entry.PeerName = preferred.PeerName;
+        entry.JellyfinId = preferred.JellyfinId;
+    }
+
+    private static void TryMoveEntryToPrimaryPeerFolder(ManifestEntry entry)
+    {
+        if (string.IsNullOrWhiteSpace(entry.Path) || !Directory.Exists(entry.Path))
+        {
+            return;
+        }
+
+        var itemDir = new DirectoryInfo(entry.Path);
+        var currentPeerDir = itemDir.Parent;
+        var rootDir = currentPeerDir?.Parent;
+        if (currentPeerDir is null || rootDir is null)
+        {
+            return;
+        }
+
+        var targetPeerDir = Path.Combine(rootDir.FullName, StrmWriter.SanitizePeerFolderSegment(entry.PeerName));
+        if (string.Equals(currentPeerDir.FullName, targetPeerDir, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        Directory.CreateDirectory(targetPeerDir);
+        var targetPath = Path.Combine(targetPeerDir, itemDir.Name);
+        if (Directory.Exists(targetPath))
+        {
+            return;
+        }
+
+        Directory.Move(entry.Path, targetPath);
+        entry.Path = targetPath;
+
+        if (!currentPeerDir.EnumerateFileSystemInfos().Any())
+        {
+            currentPeerDir.Delete();
+        }
+    }
+
+    private static int SourcePixelCount(ManifestSource source)
+        => (source.Width ?? 0) * (source.Height ?? 0);
+
+    private static DateTime SourceUpdatedAt(ManifestSource source)
+        => DateTime.TryParse(source.UpdatedAt, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var updatedAt)
+            ? updatedAt
+            : DateTime.MinValue;
+
     private static string ManifestKey(string? tmdbId, string peerName, string jellyfinId)
     {
         var p = peerName.Trim();
         return string.IsNullOrEmpty(tmdbId)
             ? $"no-tmdb:{p}:{jellyfinId}"
-            : $"tmdb:{tmdbId}:{p}";
+            : $"tmdb:{tmdbId}";
     }
+
+    private static string SourceKey(string itemKey, string peerName)
+        => $"{itemKey}|{peerName.Trim()}";
 }

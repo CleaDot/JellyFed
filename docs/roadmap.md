@@ -23,8 +23,8 @@
 | 5a — Versioning config + manifest | 🔜 | 0.1.0.16 |
 | 5b — Versioning API `/JellyFed/v1/` | 🔜 | 0.1.0.17 |
 | 5c — Migration legacy layout + gel du contrat disque | 🔜 | 0.1.0.18 |
-| 5d — Multi-source (`sources.json` + `IMediaSourceProvider`) | 🔜 | 0.1.0.19 |
-| 5e — Tag `<studio>` peer dans NFO + fix SRT soft-sub | 🔜 | 0.1.0.20 |
+| 5d — Multi-source provenance (`sources[]` + `sources.json`) | 🟡 slice landed, provider pending | feature/v1-sources |
+| 5e — Tag `<studio>` peer dans NFO + provenance tags | 🟡 partial | feature/v1-sources |
 | 5f — Tests d'intégration + hardening | 🔜 | 0.1.0.21 |
 | **v1.0.0 — Release stable (architecture figée)** | 🎯 | **1.0.0** |
 | 6 — UI settings refonte | Post-v1 | v1.1 |
@@ -232,10 +232,18 @@ Post-v1 (non-breaking, safe à ajouter en v1.x) : UI refonte, discovery plus ric
 
 ### FEAT-08 — Multi-source / IMediaSourceProvider (P5)
 **Contexte :** Même film disponible chez plusieurs peers → proposer plusieurs sources au client.
-- `sources.json` par item (stocké à côté du `.strm`)
-- `FederationMediaSourceProvider.cs` implémente `IMediaSourceProvider`
-- Tri des sources : qualité décroissante, peer le plus rapide en premier
-- Le client Jellyfin voit toutes les sources et peut choisir
+
+**Slice actuellement mergée sur `feature/v1-sources` :**
+- manifest logique par TMDB ID + `sources[]` par item ;
+- `sources.json` écrit à côté de chaque item ;
+- promotion d'une source primaire alternative si un peer disparaît ;
+- balises NFO visibles (`studio` / `tag`) pour provenance et filtrage.
+
+**Reste à faire pour le vrai player-integrated source selection :**
+- `FederationMediaSourceProvider.cs` implémente `IMediaSourceProvider` ;
+- exposition de plusieurs `MediaSourceInfo` au player Jellyfin ;
+- mapping épisode/saison complet pour les séries ;
+- sélection de source côté player au lieu du simple contrôle de source primaire.
 
 ---
 
@@ -255,7 +263,7 @@ Post-v1 (non-breaking, safe à ajouter en v1.x) : UI refonte, discovery plus ric
 
 ### FEAT-06 — Tag peer dans les items Jellyfin (partiellement implémenté)
 **Statut :** ✅ `GET /JellyFed/v1/manifest/stats` + `POST /JellyFed/v1/peer/purge` + section "Synced Catalogue" dans l'UI.
-**Restant :** Tag `<studio>JellyFed:peer-b</studio>` dans le `.nfo` pour filtrage natif Jellyfin (optionnel).
+**Restant :** compléter le fix SRT/ASS soft-sub et, si nécessaire, enrichir encore les NFO / `MediaSourceInfo` pour le futur provider.
 
 ---
 

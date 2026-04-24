@@ -18,6 +18,7 @@ Jellyfin supporte nativement les fichiers `.strm` : un fichier texte contenant u
 {MoviesRoot}/{PeerName}/          ← racine films (MoviesRootPath ou défaut MetadataPath/Films)
   Oppenheimer (2023)/
     Oppenheimer (2023).strm      → "https://peer-b/JellyFed/v1/stream/abc123?token=fed_token"
+    sources.json                 → provenance locale + primary source + sources[]
     …
 
 {SeriesRoot}/{PeerName}/         ← séries TV non-anime
@@ -243,8 +244,8 @@ Sans les infos codec dans le NFO : Jellyfin suppose direct-play → browser reç
 ## Manifest
 
 **Clé de manifest :**
-- Avec TMDB ID → `"tmdb:{tmdbId}"`
-- Sans TMDB ID → `"no-tmdb:{peerName}:{jellyfinId}"`
+- Avec TMDB ID → `"tmdb:{tmdbId}"` (item logique partagé entre plusieurs peers)
+- Sans TMDB ID → `"no-tmdb:{peerName}:{jellyfinId}"` (fallback peer-scopé)
 
 **Entrée :**
 ```json
@@ -255,11 +256,47 @@ Sans les infos codec dans le NFO : Jellyfin suppose direct-play → browser reç
       "path": "/data/jellyfin/data/jellyfed-library/Films/Oppenheimer (2023)",
       "peerName": "instance-b",
       "jellyfinId": "abc123def456",
-      "syncedAt": "2026-04-13T01:58:14Z"
+      "syncedAt": "2026-04-13T01:58:14Z",
+      "sources": [
+        {
+          "peerName": "instance-b",
+          "jellyfinId": "abc123def456",
+          "streamUrl": "https://peer-b/JellyFed/stream/abc123def456?token=...",
+          "videoCodec": "hevc",
+          "audioCodec": "eac3",
+          "width": 1920,
+          "height": 1080
+        },
+        {
+          "peerName": "instance-c",
+          "jellyfinId": "xyz987",
+          "streamUrl": "https://peer-c/JellyFed/stream/xyz987?token=...",
+          "videoCodec": "h264",
+          "audioCodec": "aac",
+          "width": 1280,
+          "height": 720
+        }
+      ]
     }
   }
 }
 ```
+
+`peerName` / `jellyfinId` restent le **primary source** courant (celui dont les `.strm` pointent réellement vers le peer). Les autres variantes sont stockées dans `sources[]` et dans le sidecar local `sources.json` pour la provenance, le failover et le futur sélecteur de source.
+
+### Slice v1 provenance / multi-source
+
+- un seul item logique par TMDB ID dans le manifest ;
+- `sources[]` garde les peers alternatifs ;
+- `sources.json` est écrit à côté de chaque item materialized ;
+- les NFO portent des marqueurs visibles :
+  - `<studio>JellyFed:{PeerName}</studio>` pour chaque source ;
+  - `<tag>JellyFed:primary:{PeerName}</tag>` ;
+  - `<tag>JellyFed:source:{PeerName}</tag>` ;
+  - `<tag>JellyFed:multi-source</tag>` si plusieurs peers exposent le même item ;
+- si le peer primaire disparaît mais qu'une autre source reste, JellyFed promeut une source alternative et réécrit le `.strm` (films) ou la matérialisation épisode best-effort (séries) au lieu de supprimer l'item logique.
+
+⚠️ `IMediaSourceProvider` n'est pas encore câblé dans cette slice. Le groundwork disque + manifest est prêt, mais le player Jellyfin ne voit encore qu'une source active à la fois (la primaire).
 
 ---
 

@@ -34,9 +34,11 @@ Instance A installe JellyFed. Elle se connecte à l'Instance B. Le plugin synchr
 
 ### Synchronisation
 - Tâche planifiée `IScheduledTask` (intervalle configurable, défaut 6h)
-- Manifest JSON — évite la re-création des `.strm` déjà présents
+- Manifest logique JSON + `sources[]` — évite la re-création des `.strm` déjà présents et prépare le multi-source
 - Mise à jour automatique des NFO existants à chaque sync (codec, pistes audio, sous-titres)
-- Pruning automatique des `.strm` dont les items ont disparu du peer
+- Sidecar `sources.json` écrit à côté de chaque item pour la provenance locale
+- Provenance visible via tags / studio (`JellyFed:primary:*`, `JellyFed:source:*`, `JellyFed:{peer}`)
+- Pruning automatique des `.strm` dont les items ont disparu du peer, sans supprimer l'item si une autre source reste
 - Déduplication par TMDB ID (pas de doublon si contenu déjà présent localement)
 - Rescan Jellyfin déclenché après chaque sync
 
@@ -144,3 +146,4 @@ La renseigner dans la config JellyFed. Permet :
 |---|---|---|
 | BUG-05 | Sous-titres SRT/ASS non affichés (soft-sub WebVTT) | 🔴 P1 |
 | BUG-06 | PGS brûlés en hard-sub (non désactivable) | 🟡 Limitation Jellyfin |
+| FEAT-08 | Sélecteur multi-source natif côté player (`IMediaSourceProvider`) pas encore branché : une seule source primaire exposée à la fois | 🟡 groundwork prêt |

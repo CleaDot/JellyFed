@@ -37,6 +37,7 @@ public class FederationController : ControllerBase
     private readonly ITaskManager _taskManager;
     private readonly FederationSyncTask _syncTask;
     private readonly PeerClient _peerClient;
+    private readonly StrmWriter _strmWriter;
     private readonly ILogger<FederationController> _logger;
 
     /// <summary>
@@ -46,18 +47,21 @@ public class FederationController : ControllerBase
     /// <param name="taskManager">Instance of the <see cref="ITaskManager"/> interface.</param>
     /// <param name="syncTask">Instance of the <see cref="FederationSyncTask"/> used for per-peer sync.</param>
     /// <param name="peerClient">Instance of the <see cref="PeerClient"/> used for health checks.</param>
+    /// <param name="strmWriter">Instance of the <see cref="StrmWriter"/> used for local materialization updates.</param>
     /// <param name="logger">Instance of the <see cref="ILogger{FederationController}"/> interface.</param>
     public FederationController(
         ILibraryManager libraryManager,
         ITaskManager taskManager,
         FederationSyncTask syncTask,
         PeerClient peerClient,
+        StrmWriter strmWriter,
         ILogger<FederationController> logger)
     {
         _libraryManager = libraryManager;
         _taskManager = taskManager;
         _syncTask = syncTask;
         _peerClient = peerClient;
+        _strmWriter = strmWriter;
         _logger = logger;
     }
 
@@ -577,24 +581,30 @@ public class FederationController : ControllerBase
 
         foreach (var entry in manifest.Movies.Values)
         {
-            if (!stats.TryGetValue(entry.PeerName, out var s))
+            foreach (var peerName in EnumerateSourcePeers(entry))
             {
-                s = new PeerCatalogStatsDto { Name = entry.PeerName };
-                stats[entry.PeerName] = s;
-            }
+                if (!stats.TryGetValue(peerName, out var s))
+                {
+                    s = new PeerCatalogStatsDto { Name = peerName };
+                    stats[peerName] = s;
+                }
 
-            s.MovieCount++;
+                s.MovieCount++;
+            }
         }
 
         foreach (var entry in manifest.Series.Values)
         {
-            if (!stats.TryGetValue(entry.PeerName, out var s))
+            foreach (var peerName in EnumerateSourcePeers(entry))
             {
-                s = new PeerCatalogStatsDto { Name = entry.PeerName };
-                stats[entry.PeerName] = s;
-            }
+                if (!stats.TryGetValue(peerName, out var s))
+                {
+                    s = new PeerCatalogStatsDto { Name = peerName };
+                    stats[peerName] = s;
+                }
 
-            s.SeriesCount++;
+                s.SeriesCount++;
+            }
         }
 
         return Ok(new ManifestStatsDto { Peers = [.. stats.Values.OrderBy(p => p.Name)] });
@@ -604,6 +614,7 @@ public class FederationController : ControllerBase
     /// Purges all synced .strm files for a given peer from the manifest and filesystem.
     /// </summary>
     /// <param name="request">The peer name to purge.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Number of deleted movies and series.</returns>
     [HttpPost("peer/purge")]
     [AllowAnonymous]
@@ -611,7 +622,9 @@ public class FederationController : ControllerBase
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
-    public ActionResult PurgePeerCatalog([FromBody] PurgePeerCatalogRequestDto request)
+    public async Task<ActionResult> PurgePeerCatalog(
+        [FromBody] PurgePeerCatalogRequestDto request,
+        CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(request.PeerName))
         {
@@ -624,61 +637,16 @@ public class FederationController : ControllerBase
             return BadRequest("LibraryPath is not configured.");
         }
 
-        var manifest = ManifestStore.Load(config.LibraryPath);
         var name = request.PeerName;
-
-        var movieKeys = manifest.Movies
-            .Where(kv => string.Equals(kv.Value.PeerName, name, StringComparison.OrdinalIgnoreCase))
-            .Select(kv => kv.Key)
-            .ToList();
-
-        var seriesKeys = manifest.Series
-            .Where(kv => string.Equals(kv.Value.PeerName, name, StringComparison.OrdinalIgnoreCase))
-            .Select(kv => kv.Key)
-            .ToList();
-
-        // Collect folder paths before removing from manifest.
-        var deletedPaths = movieKeys.Select(k => manifest.Movies[k].Path)
-            .Concat(seriesKeys.Select(k => manifest.Series[k].Path))
-            .ToList();
-
-        foreach (var key in movieKeys)
-        {
-            var path = manifest.Movies[key].Path;
-            if (Directory.Exists(path))
-            {
-                Directory.Delete(path, true);
-            }
-
-            manifest.Movies.Remove(key);
-        }
-
-        foreach (var key in seriesKeys)
-        {
-            var path = manifest.Series[key].Path;
-            if (Directory.Exists(path))
-            {
-                Directory.Delete(path, true);
-            }
-
-            manifest.Series.Remove(key);
-        }
-
-        ManifestStore.Save(config.LibraryPath, manifest);
-
-        // Remove items from Jellyfin's library index so they disappear immediately
-        // without waiting for a scheduled scan.
-        RemoveLibraryItems(deletedPaths);
-
-        FederatedPathHelper.TryDeletePeerContentFolders(config, name);
+        var summary = await PurgePeerDataAsync(config, name, cancellationToken).ConfigureAwait(false);
 
         _logger.LogInformation(
             "JellyFed: purged catalog for peer {PeerName} — {MovieCount} movies, {SeriesCount} series deleted.",
             name,
-            movieKeys.Count,
-            seriesKeys.Count);
+            summary.DeletedMovies,
+            summary.DeletedSeries);
 
-        return Ok(new { status = "ok", deletedMovies = movieKeys.Count, deletedSeries = seriesKeys.Count });
+        return Ok(new { status = "ok", deletedMovies = summary.DeletedMovies, deletedSeries = summary.DeletedSeries });
     }
 
     /// <summary>
@@ -731,7 +699,7 @@ public class FederationController : ControllerBase
 
             foreach (var entry in manifest.Movies.Values)
             {
-                if (!string.Equals(entry.PeerName, peer.Name, StringComparison.OrdinalIgnoreCase))
+                if (!EntryContainsPeer(entry, peer.Name))
                 {
                     continue;
                 }
@@ -748,7 +716,7 @@ public class FederationController : ControllerBase
 
             foreach (var entry in manifest.Series.Values)
             {
-                if (!string.Equals(entry.PeerName, peer.Name, StringComparison.OrdinalIgnoreCase))
+                if (!EntryContainsPeer(entry, peer.Name))
                 {
                     continue;
                 }
@@ -1104,6 +1072,7 @@ public class FederationController : ControllerBase
     /// Keeps the peer in the configuration.
     /// </summary>
     /// <param name="name">Peer name.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Deletion summary.</returns>
     [HttpPost("peer/{name}/purge")]
     [AllowAnonymous]
@@ -1111,7 +1080,7 @@ public class FederationController : ControllerBase
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
-    public ActionResult PurgePeerByName([FromRoute] string name)
+    public async Task<ActionResult> PurgePeerByName([FromRoute] string name, CancellationToken cancellationToken)
     {
         var config = Plugin.Instance?.Configuration;
         if (config is null || string.IsNullOrWhiteSpace(config.LibraryPath))
@@ -1126,7 +1095,7 @@ public class FederationController : ControllerBase
             return NotFound();
         }
 
-        var summary = PurgePeerData(config, peer.Name);
+        var summary = await PurgePeerDataAsync(config, peer.Name, cancellationToken).ConfigureAwait(false);
 
         // Reset the local counters in PeerStatus so the UI shows "never" after purge.
         var states = PeerStateStore.Load(config.LibraryPath);
@@ -1152,6 +1121,7 @@ public class FederationController : ControllerBase
     /// blacklist its URL so it stays hidden from discovery suggestions until unblocked.
     /// </summary>
     /// <param name="name">Peer name.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Deletion summary.</returns>
     [HttpPost("peer/{name}/remove")]
     [AllowAnonymous]
@@ -1160,7 +1130,7 @@ public class FederationController : ControllerBase
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     [SuppressMessage("Security", "CA3003:Review code for file path injection vulnerabilities", Justification = "Peer name is used only as a dictionary key and sanitized folder segment, never as a direct filesystem path.")]
-    public ActionResult RemovePeer([FromRoute] string name)
+    public async Task<ActionResult> RemovePeer([FromRoute] string name, CancellationToken cancellationToken)
     {
         var config = Plugin.Instance?.Configuration;
         if (config is null || string.IsNullOrWhiteSpace(config.LibraryPath))
@@ -1175,7 +1145,7 @@ public class FederationController : ControllerBase
             return NotFound();
         }
 
-        var summary = PurgePeerData(config, peer.Name);
+        var summary = await PurgePeerDataAsync(config, peer.Name, cancellationToken).ConfigureAwait(false);
 
         // Forget any stored state for this peer (online/offline, counts, last sync).
         var states = PeerStateStore.Load(config.LibraryPath);
@@ -1838,56 +1808,238 @@ public class FederationController : ControllerBase
 
     /// <summary>
     /// Shared purge pipeline used by both the name-based <c>/peer/{name}/purge</c> endpoint and
-    /// <c>/peer/{name}/remove</c>. Removes all manifest entries, deletes .strm folders from disk,
-    /// clears Jellyfin library rows and deletes the per-peer subfolders.
+    /// <c>/peer/{name}/remove</c>. Removes this peer from the manifest, preserves logical items
+    /// that still have alternate sources, refreshes their primary-source materialization when
+    /// possible, clears deleted Jellyfin library rows and deletes empty per-peer subfolders.
     /// </summary>
     [SuppressMessage("Security", "CA3003:Review code for file path injection vulnerabilities", Justification = "Paths come from the plugin manifest written by this plugin and admin-configured roots.")]
-    private (int DeletedMovies, int DeletedSeries) PurgePeerData(PluginConfiguration config, string peerName)
+    private async Task<(int DeletedMovies, int DeletedSeries)> PurgePeerDataAsync(
+        PluginConfiguration config,
+        string peerName,
+        CancellationToken cancellationToken)
     {
         var manifest = ManifestStore.Load(config.LibraryPath);
 
-        var movieKeys = manifest.Movies
-            .Where(kv => string.Equals(kv.Value.PeerName, peerName, StringComparison.OrdinalIgnoreCase))
-            .Select(kv => kv.Key)
-            .ToList();
-
-        var seriesKeys = manifest.Series
-            .Where(kv => string.Equals(kv.Value.PeerName, peerName, StringComparison.OrdinalIgnoreCase))
-            .Select(kv => kv.Key)
-            .ToList();
-
-        var deletedPaths = movieKeys.Select(k => manifest.Movies[k].Path)
-            .Concat(seriesKeys.Select(k => manifest.Series[k].Path))
-            .ToList();
-
-        foreach (var key in movieKeys)
-        {
-            var p = manifest.Movies[key].Path;
-            if (Directory.Exists(p))
-            {
-                Directory.Delete(p, true);
-            }
-
-            manifest.Movies.Remove(key);
-        }
-
-        foreach (var key in seriesKeys)
-        {
-            var p = manifest.Series[key].Path;
-            if (Directory.Exists(p))
-            {
-                Directory.Delete(p, true);
-            }
-
-            manifest.Series.Remove(key);
-        }
+        var deletedPaths = new List<string>();
+        var deletedMovies = await RemovePeerFromEntriesAsync(manifest.Movies, peerName, "Movie", config, deletedPaths, cancellationToken)
+            .ConfigureAwait(false);
+        var deletedSeries = await RemovePeerFromEntriesAsync(manifest.Series, peerName, "Series", config, deletedPaths, cancellationToken)
+            .ConfigureAwait(false);
 
         ManifestStore.Save(config.LibraryPath, manifest);
-        RemoveLibraryItems(deletedPaths);
-        FederatedPathHelper.TryDeletePeerContentFolders(config, peerName);
+        if (deletedPaths.Count > 0)
+        {
+            RemoveLibraryItems(deletedPaths);
+        }
 
-        return (movieKeys.Count, seriesKeys.Count);
+        FederatedPathHelper.TryDeletePeerContentFolders(config, peerName);
+        _libraryManager.QueueLibraryScan();
+
+        return (deletedMovies, deletedSeries);
     }
+
+    private async Task<int> RemovePeerFromEntriesAsync(
+        Dictionary<string, ManifestEntry> entries,
+        string peerName,
+        string itemType,
+        PluginConfiguration config,
+        List<string> deletedPaths,
+        CancellationToken cancellationToken)
+    {
+        var deletedCount = 0;
+
+        foreach (var key in entries.Keys.ToList())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var entry = entries[key];
+            entry.Sources ??= [];
+            if (entry.Sources.Count == 0 && !string.IsNullOrWhiteSpace(entry.PeerName))
+            {
+                entry.Sources =
+                [
+                    new ManifestSource
+                    {
+                        PeerName = entry.PeerName,
+                        JellyfinId = entry.JellyfinId
+                    }
+                ];
+            }
+
+            var remainingSources = entry.Sources.ToList();
+            var removedSources = remainingSources
+                .Where(source => string.Equals(source.PeerName, peerName, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            if (removedSources.Count == 0)
+            {
+                continue;
+            }
+
+            var removedPrimary = removedSources.Any(source =>
+                string.Equals(source.PeerName, entry.PeerName, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(source.JellyfinId, entry.JellyfinId, StringComparison.Ordinal));
+
+            foreach (var source in removedSources)
+            {
+                remainingSources.Remove(source);
+            }
+
+            entry.Sources = remainingSources;
+
+            if (entry.Sources.Count == 0)
+            {
+                deletedPaths.Add(entry.Path);
+                if (Directory.Exists(entry.Path))
+                {
+                    Directory.Delete(entry.Path, true);
+                }
+
+                entries.Remove(key);
+                deletedCount++;
+                continue;
+            }
+
+            if (removedPrimary || string.IsNullOrWhiteSpace(entry.PeerName))
+            {
+                PromotePrimarySource(entry);
+                TryMoveEntryToPrimaryPeerFolder(entry);
+                await RehydratePromotedEntryAsync(entry, key, itemType, config, cancellationToken).ConfigureAwait(false);
+            }
+            else if (string.Equals(itemType, "Movie", StringComparison.Ordinal))
+            {
+                await _strmWriter.RefreshMovieProvenanceAsync(entry.Path, entry, key, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                await _strmWriter.RefreshSeriesProvenanceAsync(entry.Path, entry, key, cancellationToken).ConfigureAwait(false);
+            }
+
+            entry.SyncedAt = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+        }
+
+        return deletedCount;
+    }
+
+    private async Task RehydratePromotedEntryAsync(
+        ManifestEntry entry,
+        string itemKey,
+        string itemType,
+        PluginConfiguration config,
+        CancellationToken cancellationToken)
+    {
+        if (string.Equals(itemType, "Movie", StringComparison.Ordinal))
+        {
+            var primary = entry.PrimarySource;
+            if (!string.IsNullOrWhiteSpace(primary?.StreamUrl))
+            {
+                await _strmWriter.RewriteMovieStreamAsync(entry.Path, entry, primary.StreamUrl, itemKey, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            else
+            {
+                await _strmWriter.RefreshMovieProvenanceAsync(entry.Path, entry, itemKey, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
+            return;
+        }
+
+        var primaryPeer = config.Peers.FirstOrDefault(peer =>
+            string.Equals(peer.Name, entry.PeerName, StringComparison.OrdinalIgnoreCase));
+        if (primaryPeer is not null)
+        {
+            var seasons = await _peerClient.GetSeasonsAsync(primaryPeer, entry.JellyfinId, cancellationToken)
+                .ConfigureAwait(false);
+            if (seasons is not null)
+            {
+                await _strmWriter.RewriteSeriesEpisodeStreamsAsync(entry.Path, seasons, entry, itemKey, cancellationToken)
+                    .ConfigureAwait(false);
+                return;
+            }
+        }
+
+        await _strmWriter.RefreshSeriesProvenanceAsync(entry.Path, entry, itemKey, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private static void PromotePrimarySource(ManifestEntry entry)
+    {
+        if (entry.Sources.Count == 0)
+        {
+            return;
+        }
+
+        var current = entry.Sources.FirstOrDefault(source =>
+            string.Equals(source.PeerName, entry.PeerName, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(source.JellyfinId, entry.JellyfinId, StringComparison.Ordinal));
+        if (current is not null)
+        {
+            entry.PeerName = current.PeerName;
+            entry.JellyfinId = current.JellyfinId;
+            return;
+        }
+
+        var preferred = entry.Sources
+            .OrderByDescending(source => (source.Width ?? 0) * (source.Height ?? 0))
+            .ThenByDescending(source => ParseUpdatedAt(source.UpdatedAt))
+            .ThenBy(source => source.PeerName, StringComparer.OrdinalIgnoreCase)
+            .First();
+
+        entry.PeerName = preferred.PeerName;
+        entry.JellyfinId = preferred.JellyfinId;
+    }
+
+    private static DateTime ParseUpdatedAt(string? value)
+        => DateTime.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var parsed)
+            ? parsed
+            : DateTime.MinValue;
+
+    private static void TryMoveEntryToPrimaryPeerFolder(ManifestEntry entry)
+    {
+        if (string.IsNullOrWhiteSpace(entry.Path) || !Directory.Exists(entry.Path))
+        {
+            return;
+        }
+
+        var itemDir = new DirectoryInfo(entry.Path);
+        var currentPeerDir = itemDir.Parent;
+        var rootDir = currentPeerDir?.Parent;
+        if (currentPeerDir is null || rootDir is null)
+        {
+            return;
+        }
+
+        var targetPeerDir = Path.Combine(rootDir.FullName, StrmWriter.SanitizePeerFolderSegment(entry.PeerName));
+        if (string.Equals(currentPeerDir.FullName, targetPeerDir, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        Directory.CreateDirectory(targetPeerDir);
+        var targetPath = Path.Combine(targetPeerDir, itemDir.Name);
+        if (Directory.Exists(targetPath))
+        {
+            return;
+        }
+
+        Directory.Move(entry.Path, targetPath);
+        entry.Path = targetPath;
+
+        if (!currentPeerDir.EnumerateFileSystemInfos().Any())
+        {
+            currentPeerDir.Delete();
+        }
+    }
+
+    private static IEnumerable<string> EnumerateSourcePeers(ManifestEntry entry)
+        => entry.Sources is { Count: > 0 }
+            ? entry.Sources.Select(source => source.PeerName).Distinct(StringComparer.OrdinalIgnoreCase)
+            : string.IsNullOrWhiteSpace(entry.PeerName)
+                ? []
+                : [entry.PeerName];
+
+    private static bool EntryContainsPeer(ManifestEntry entry, string peerName)
+        => EnumerateSourcePeers(entry).Any(name => string.Equals(name, peerName, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
     /// Renames a peer's folder under each effective root (movies / series / anime) and rewrites
@@ -1962,12 +2114,23 @@ public class FederationController : ControllerBase
         {
             foreach (var entry in dict.Values)
             {
-                if (!string.Equals(entry.PeerName, oldName, StringComparison.OrdinalIgnoreCase))
+                var touchesPeer = string.Equals(entry.PeerName, oldName, StringComparison.OrdinalIgnoreCase) ||
+                                  EntryContainsPeer(entry, oldName);
+                if (!touchesPeer)
                 {
                     continue;
                 }
 
-                entry.PeerName = newName;
+                if (string.Equals(entry.PeerName, oldName, StringComparison.OrdinalIgnoreCase))
+                {
+                    entry.PeerName = newName;
+                }
+
+                foreach (var source in entry.Sources.Where(source => string.Equals(source.PeerName, oldName, StringComparison.OrdinalIgnoreCase)))
+                {
+                    source.PeerName = newName;
+                }
+
                 foreach (var (oldDir, newDir) in renames)
                 {
                     if (entry.Path.StartsWith(oldDir + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||

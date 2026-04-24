@@ -94,9 +94,14 @@ public static class FederatedPathHelper
             }
 
             var dir = Path.Combine(root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar), seg);
-            if (Directory.Exists(dir))
+            if (!Directory.Exists(dir))
             {
-                Directory.Delete(dir, true);
+                continue;
+            }
+
+            if (!Directory.EnumerateFileSystemEntries(dir).Any())
+            {
+                Directory.Delete(dir, false);
             }
         }
     }
