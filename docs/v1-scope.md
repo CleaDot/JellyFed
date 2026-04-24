@@ -114,12 +114,13 @@ Pourquoi avant v1 : c'est un bug fonctionnel majeur pour tout utilisateur avec d
 ## Plan de versions
 
 ```
-v0.1.0.15  Versioning config + manifest (schemaVersion, SchemaMigrator)
-v0.1.0.16  Versioning API (/JellyFed/v1/ + alias transitoires)
-v0.1.0.17  Migration legacy layout -> layout per-peer figé
-v0.1.0.18  Multi-source (sources.json + IMediaSourceProvider)
-v0.1.0.19  Tag <studio>JellyFed:peer</studio> + fix SRT soft-sub
-v0.1.0.20  Tests d'intégration + hardening (migrations, edge cases)
+v0.1.0.15  Release de réconciliation temp -> main (UI peers + layout per-peer + anime roots)
+v0.1.0.16  Versioning config + manifest (schemaVersion, SchemaMigrator)
+v0.1.0.17  Versioning API (/JellyFed/v1/ + alias transitoires)
+v0.1.0.18  Migration legacy layout -> layout per-peer figé
+v0.1.0.19  Multi-source (sources.json + IMediaSourceProvider)
+v0.1.0.20  Tag <studio>JellyFed:peer</studio> + fix SRT soft-sub
+v0.1.0.21  Tests d'intégration + hardening (migrations, edge cases)
 v1.0.0     Release stable — architecture figée
 ```
 

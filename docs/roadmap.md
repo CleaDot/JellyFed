@@ -18,13 +18,13 @@
 | 4b — Compat Jellyfin 10.11 + .NET 9 | ✅ | 0.1.0.12 |
 | 4c — HTTPS X-Forwarded-Proto + images natives | ✅ | 0.1.0.13 |
 | 4d — Codec info NFO + seeking + pistes audio/sous-titres | ✅ | 0.1.0.14 |
-| 4e — UI peers avancée + layout par peer + anime roots | ✅ | next |
-| 5a — Versioning config + manifest | 🔜 | 0.1.0.15 |
-| 5b — Versioning API `/JellyFed/v1/` | 🔜 | 0.1.0.16 |
-| 5c — Migration legacy layout + gel du contrat disque | 🔜 | 0.1.0.17 |
-| 5d — Multi-source (`sources.json` + `IMediaSourceProvider`) | 🔜 | 0.1.0.18 |
-| 5e — Tag `<studio>` peer dans NFO + fix SRT soft-sub | 🔜 | 0.1.0.19 |
-| 5f — Tests d'intégration + hardening | 🔜 | 0.1.0.20 |
+| 4e — UI peers avancée + layout par peer + anime roots | ✅ | 0.1.0.15 |
+| 5a — Versioning config + manifest | 🔜 | 0.1.0.16 |
+| 5b — Versioning API `/JellyFed/v1/` | 🔜 | 0.1.0.17 |
+| 5c — Migration legacy layout + gel du contrat disque | 🔜 | 0.1.0.18 |
+| 5d — Multi-source (`sources.json` + `IMediaSourceProvider`) | 🔜 | 0.1.0.19 |
+| 5e — Tag `<studio>` peer dans NFO + fix SRT soft-sub | 🔜 | 0.1.0.20 |
+| 5f — Tests d'intégration + hardening | 🔜 | 0.1.0.21 |
 | **v1.0.0 — Release stable (architecture figée)** | 🎯 | **1.0.0** |
 | 6 — UI settings refonte | Post-v1 | v1.1 |
 | 7 — Peer-of-peer discovery (FEAT-03) | Post-v1 | v1.2 |
@@ -40,12 +40,12 @@ Le plan détaillé de la v1 (contrats à figer, motivations, critères de valida
 **Objectif v1 : figer l'architecture.** Toutes les features listées dans la phase 5 modifient des contrats publics (layout, schémas, API) et doivent être implémentées avant v1 pour que les versions suivantes soient upgradables sans reset.
 
 ```
-P1  Versioning config + manifest (v0.1.0.15)          — prérequis migrations
-P2  Versioning API /JellyFed/v1/ (v0.1.0.16)          — prérequis coexistence v1/v2
+P1  Versioning config + manifest (v0.1.0.16)          — prérequis migrations
+P2  Versioning API /JellyFed/v1/ (v0.1.0.17)          — prérequis coexistence v1/v2
 P3  Migration legacy layout + gel du layout par peer  — sécuriser l'upgrade depuis l'ancien layout plat
-P4  Multi-source sources.json (v0.1.0.18)             — nouveau fichier par item
-P5  Tag <studio> peer + fix SRT BUG-05 (v0.1.0.19)    — format NFO final
-P6  Tests d'intégration + hardening (v0.1.0.20)       — validation migrations
+P4  Multi-source sources.json (v0.1.0.19)             — nouveau fichier par item
+P5  Tag <studio> peer + fix SRT BUG-05 (v0.1.0.20)    — format NFO final
+P6  Tests d'intégration + hardening (v0.1.0.21)       — validation migrations
 ```
 
 Post-v1 (non-breaking, safe à ajouter en v1.x) : UI refonte, peer-of-peer discovery, recall, suppression propagée, distribution publique.
