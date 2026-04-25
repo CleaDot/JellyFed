@@ -1,7 +1,7 @@
 ---
 name: "JellyFed"
 guid: "ff0164d7-e8c0-44c1-bc61-45017125a155"
-version: "0.1.0.16"
+version: "0.1.0.17"
 targetAbi: "10.11.0.0"
 framework: "net9.0"
 overview: "Native federation between Jellyfin instances"
@@ -14,5 +14,5 @@ owner: "MaxBly"
 artifacts:
 - "Jellyfin.Plugin.JellyFed.dll"
 changelog: >
-  Add persistent SQLite audit logging, admin-only logs endpoints/UI, peer access history,
-  and token-attributed audit groundwork for v1 hardening.
+  Integrate the v1 foundation, discovery/admin control, multi-source provenance, and audit logs
+  on main, plus an admin source selector to promote the active upstream source for playback.

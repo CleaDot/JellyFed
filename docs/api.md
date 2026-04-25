@@ -174,6 +174,31 @@ En v1, **cet endpoint ne crée plus de peer automatiquement** : un admin doit to
 
 ---
 
+## Endpoints admin-only — sélection de source
+
+Ces routes sont réservées à un utilisateur Jellyfin authentifié **administrateur**.
+
+### `GET /JellyFed/v1/admin/sources?search=...&limit=100`
+
+Retourne les items fédérés qui ont actuellement plusieurs sources amont connues.
+Le résultat expose l'item logique, la source primaire actuelle et les peers candidats.
+
+### `POST /JellyFed/v1/admin/sources/select`
+
+Promeut une source donnée comme source primaire locale, réécrit les `.strm`/provenance associés,
+et déclenche un refresh de librairie.
+
+**Body :**
+```json
+{
+  "itemType": "Movie",
+  "itemKey": "tmdb:603692",
+  "peerName": "instance-b"
+}
+```
+
+---
+
 ## Endpoints protégés (Bearer requis)
 
 ### `GET /JellyFed/v1/catalog`
