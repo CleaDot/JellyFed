@@ -1,9 +1,8 @@
 using System;
-using System.Net.Http;
-using System.Net.Http.Headers;
-using System.Net.Http.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Plugin.JellyFed.Audit;
+using Jellyfin.Plugin.JellyFed.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -17,7 +16,8 @@ public class PeerHeartbeatService : IHostedService, IDisposable
 {
     private const int HeartbeatIntervalMinutes = 5;
 
-    private readonly IHttpClientFactory _httpClientFactory;
+    private readonly PeerClient _peerClient;
+    private readonly AuditLogService _auditLogService;
     private readonly ILogger<PeerHeartbeatService> _logger;
     private Timer? _timer;
     private bool _disposed;
@@ -25,11 +25,13 @@ public class PeerHeartbeatService : IHostedService, IDisposable
     /// <summary>
     /// Initializes a new instance of the <see cref="PeerHeartbeatService"/> class.
     /// </summary>
-    /// <param name="httpClientFactory">Instance of <see cref="IHttpClientFactory"/>.</param>
+    /// <param name="peerClient">Federation HTTP client with route-version fallback support.</param>
+    /// <param name="auditLogService">Audit service.</param>
     /// <param name="logger">Instance of the <see cref="ILogger{PeerHeartbeatService}"/> interface.</param>
-    public PeerHeartbeatService(IHttpClientFactory httpClientFactory, ILogger<PeerHeartbeatService> logger)
+    public PeerHeartbeatService(PeerClient peerClient, AuditLogService auditLogService, ILogger<PeerHeartbeatService> logger)
     {
-        _httpClientFactory = httpClientFactory;
+        _peerClient = peerClient;
+        _auditLogService = auditLogService;
         _logger = logger;
     }
 
@@ -88,7 +90,6 @@ public class PeerHeartbeatService : IHostedService, IDisposable
         }
 
         var states = PeerStateStore.Load(config.LibraryPath);
-        var http = _httpClientFactory.CreateClient("JellyFed");
         bool changed = false;
 
         foreach (var peer in config.Peers)
@@ -104,35 +105,72 @@ public class PeerHeartbeatService : IHostedService, IDisposable
                 states[peer.Name] = status;
             }
 
+            PeerIdentity.EnsurePeerId(peer);
+            var wasOnline = status.Online;
+            var previousVersion = status.Version;
+
             try
             {
-                var url = peer.Url.TrimEnd('/') + "/JellyFed/health";
-                using var request = new HttpRequestMessage(HttpMethod.Get, url);
-                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", peer.FederationToken);
+                var info = await _peerClient
+                    .GetSystemInfoAsync(peer.Url, peer.FederationToken, cancellationToken)
+                    .ConfigureAwait(false);
 
-                using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                cts.CancelAfter(TimeSpan.FromSeconds(10));
-
-                using var response = await http.SendAsync(request, cts.Token).ConfigureAwait(false);
-
-                if (response.IsSuccessStatusCode)
+                if (info is not null)
                 {
-                    var health = await response.Content
-                        .ReadFromJsonAsync<HealthResponse>(cts.Token)
-                        .ConfigureAwait(false);
+                    status.MarkOnline(info.Version, status.MovieCount, status.SeriesCount);
 
-                    status.MarkOnline(health?.Version ?? string.Empty, status.MovieCount, status.SeriesCount);
-                    _logger.LogDebug("JellyFed heartbeat: {PeerName} online (v{Version}).", peer.Name, health?.Version);
+                    var discovery = await _peerClient.GetDiscoveryAsync(peer, cancellationToken)
+                        .ConfigureAwait(false);
+                    if (discovery?.Self is not null)
+                    {
+                        status.Discoverable = discovery.Self.Discoverable;
+                        if (!string.IsNullOrWhiteSpace(discovery.Self.Version))
+                        {
+                            status.Version = discovery.Self.Version;
+                        }
+                    }
+
+                    _logger.LogDebug(
+                        "JellyFed heartbeat: {PeerName} online (v{Version}, route={Route}).",
+                        peer.Name,
+                        status.Version,
+                        info.PreferredRoutePrefix);
+
+                    if (!wasOnline || !string.Equals(previousVersion, status.Version, StringComparison.Ordinal))
+                    {
+                        _auditLogService.WritePeerEvent(
+                            peer,
+                            "peer.heartbeat.online",
+                            $"Peer {peer.Name} is reachable.",
+                            details: new { version = status.Version, wasOnline, route = info.PreferredRoutePrefix, discoverable = status.Discoverable });
+                    }
                 }
                 else
                 {
                     status.MarkOffline();
+                    if (wasOnline)
+                    {
+                        _auditLogService.WritePeerEvent(
+                            peer,
+                            "peer.heartbeat.offline",
+                            $"Peer {peer.Name} is no longer reachable.",
+                            AuditLogSeverities.Warning);
+                    }
                 }
             }
-            catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException or TaskCanceledException)
+            catch (Exception ex) when (ex is OperationCanceledException or TaskCanceledException)
             {
                 status.MarkOffline();
                 _logger.LogDebug("JellyFed heartbeat: {PeerName} unreachable — {Message}", peer.Name, ex.Message);
+                if (wasOnline)
+                {
+                    _auditLogService.WritePeerEvent(
+                        peer,
+                        "peer.heartbeat.offline",
+                        $"Peer {peer.Name} became unreachable.",
+                        AuditLogSeverities.Warning,
+                        new { error = ex.Message });
+                }
             }
 
             changed = true;
@@ -142,10 +180,5 @@ public class PeerHeartbeatService : IHostedService, IDisposable
         {
             PeerStateStore.Save(config.LibraryPath, states);
         }
-    }
-
-    private sealed class HealthResponse
-    {
-        public string? Version { get; set; }
     }
 }

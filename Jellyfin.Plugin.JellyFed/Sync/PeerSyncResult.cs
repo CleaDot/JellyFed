@@ -23,6 +23,12 @@ public class PeerSyncResult
     /// <summary>Gets or sets the duration of the pass in milliseconds.</summary>
     public long DurationMs { get; set; }
 
+    /// <summary>
+    /// Gets or sets a value indicating whether JellyFed fetched a real catalog snapshot for this peer.
+    /// Pruning is skipped when false so temporary outages do not delete retained sources.
+    /// </summary>
+    public bool CanPrune { get; set; }
+
     /// <summary>Gets or sets an error message when the pass failed; null on success.</summary>
     public string? Error { get; set; }
 }

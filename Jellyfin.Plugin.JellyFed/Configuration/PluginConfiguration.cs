@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
+using Jellyfin.Plugin.JellyFed;
 using MediaBrowser.Model.Plugins;
 
 namespace Jellyfin.Plugin.JellyFed.Configuration;
@@ -15,18 +16,33 @@ public class PluginConfiguration : BasePluginConfiguration
     /// </summary>
     public PluginConfiguration()
     {
+        SchemaVersion = FederationProtocol.CurrentSchemaVersion;
+        InstanceId = string.Empty;
         Peers = [];
+        DiscoveredPeers = [];
         BlockedPeerUrls = [];
         SyncIntervalHours = 6;
         LibraryPath = string.Empty; // Set to {DataPath}/jellyfed-library on first startup by Plugin.cs
         FederationToken = string.Empty;
         SelfUrl = string.Empty;
         SelfName = string.Empty;
+        Discoverable = true;
         JellyfinApiKey = string.Empty;
         MoviesRootPath = string.Empty;
         SeriesRootPath = string.Empty;
         AnimeRootPath = string.Empty;
     }
+
+    /// <summary>
+    /// Gets or sets the schema version of this persisted configuration document.
+    /// </summary>
+    public int SchemaVersion { get; set; }
+
+    /// <summary>
+    /// Gets or sets the stable local instance identifier used for federation handshakes.
+    /// Generated once and kept across upgrades.
+    /// </summary>
+    public string InstanceId { get; set; }
 
     /// <summary>
     /// Gets or sets the list of federated peers.
@@ -38,6 +54,14 @@ public class PluginConfiguration : BasePluginConfiguration
     [SuppressMessage("Usage", "CA2227:Collection properties should be read only", Justification = "Required for Jellyfin plugin config deserialization.")]
     [SuppressMessage("Design", "CA1002:Do not expose generic lists", Justification = "Required for Jellyfin plugin config deserialization.")]
     public List<PeerConfiguration> Peers { get; set; }
+
+    /// <summary>
+    /// Gets or sets the admin-visible peer suggestions discovered through direct peers.
+    /// These entries never sync until an admin manually adds them to <see cref="Peers"/>.
+    /// </summary>
+    [SuppressMessage("Usage", "CA2227:Collection properties should be read only", Justification = "Required for Jellyfin plugin config deserialization.")]
+    [SuppressMessage("Design", "CA1002:Do not expose generic lists", Justification = "Required for Jellyfin plugin config deserialization.")]
+    public List<DiscoveredPeerConfiguration> DiscoveredPeers { get; set; }
 
     /// <summary>
     /// Gets or sets the sync interval in hours.
@@ -72,14 +96,14 @@ public class PluginConfiguration : BasePluginConfiguration
     public string FederationToken { get; set; }
 
     /// <summary>
-    /// Gets or sets URLs of peers that were manually removed and must not be auto-registered again.
+    /// Gets or sets URLs of peers that were manually removed and should stay hidden from discovery suggestions until unblocked.
     /// </summary>
     [SuppressMessage("Usage", "CA2227:Collection properties should be read only", Justification = "Required for Jellyfin plugin config deserialization.")]
     [SuppressMessage("Design", "CA1002:Do not expose generic lists", Justification = "Required for Jellyfin plugin config deserialization.")]
     public List<string> BlockedPeerUrls { get; set; }
 
     /// <summary>
-    /// Gets or sets the URL by which this instance is reachable from peers (used for auto-registration).
+    /// Gets or sets the URL by which this instance is reachable from peers (used for discovery suggestions and manual setup).
     /// </summary>
     public string SelfUrl { get; set; }
 
@@ -88,6 +112,12 @@ public class PluginConfiguration : BasePluginConfiguration
     /// Defaults to "JellyFed" if left empty.
     /// </summary>
     public string SelfName { get; set; }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether this instance may be suggested to second-hop peers.
+    /// Direct peers can still connect manually regardless of this setting.
+    /// </summary>
+    public bool Discoverable { get; set; }
 
     /// <summary>
     /// Gets or sets a Jellyfin API key used server-side to redirect stream requests

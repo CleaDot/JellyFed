@@ -2,7 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using Jellyfin.Plugin.JellyFed.Configuration;
+using Jellyfin.Plugin.JellyFed.Sync;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Common.Plugins;
 using MediaBrowser.Model.Plugins;
@@ -25,7 +27,7 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     {
         Instance = this;
 
-        var needsSave = false;
+        var needsSave = SchemaMigrator.MigrateConfiguration(Configuration);
 
         // Use Jellyfin's data directory as the library base path.
         // Works on Docker (/config/data/), Linux standalone, Windows, etc.
@@ -42,6 +44,16 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
         if (string.IsNullOrWhiteSpace(Configuration.FederationToken))
         {
             Configuration.FederationToken = Guid.NewGuid().ToString("N");
+            needsSave = true;
+        }
+
+        if (!string.IsNullOrWhiteSpace(Configuration.LibraryPath))
+        {
+            _ = ManifestStore.Load(Configuration.LibraryPath);
+        }
+
+        if (Configuration.Peers.Any(PeerIdentity.EnsurePeerId))
+        {
             needsSave = true;
         }
 

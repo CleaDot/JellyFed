@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Xml.Linq;
@@ -18,6 +20,15 @@ namespace Jellyfin.Plugin.JellyFed.Sync;
 /// </summary>
 public class StrmWriter
 {
+    /// <summary>Well-known sidecar file that records all known upstream sources for an item.</summary>
+    public const string SourcesFileName = "sources.json";
+
+    private static readonly JsonSerializerOptions SourcesJsonOptions = new()
+    {
+        WriteIndented = true,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+    };
+
     private readonly PeerClient _peerClient;
     private readonly ILogger<StrmWriter> _logger;
 
@@ -48,34 +59,28 @@ public class StrmWriter
     }
 
     /// <summary>
-    /// Writes a movie item: folder, .strm, .nfo, poster and backdrop.
+    /// Writes a new movie item: folder, .strm, .nfo, poster, backdrop and sources sidecar.
     /// </summary>
-    /// <param name="contentRoot">Directory for this peer's movies (e.g. {MoviesRoot}/{peer}/).</param>
-    /// <param name="item">The catalog item.</param>
-    /// <param name="peer">The source peer.</param>
+    /// <param name="contentRoot">Peer-scoped root where the movie folder should be created.</param>
+    /// <param name="item">Catalog snapshot of the movie.</param>
+    /// <param name="peer">Peer that supplied the primary source.</param>
+    /// <param name="entry">Logical manifest entry for the movie.</param>
+    /// <param name="itemKey">Logical manifest key.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>The folder path that was written.</returns>
+    /// <returns>The folder path written on disk.</returns>
     public async Task<string> WriteMovieAsync(
         string contentRoot,
         CatalogItemDto item,
         PeerConfiguration peer,
+        ManifestEntry entry,
+        string itemKey,
         CancellationToken cancellationToken)
     {
         var folderName = SanitizeName($"{item.Title} ({item.Year})");
         var folderPath = Path.Combine(contentRoot, folderName);
         Directory.CreateDirectory(folderPath);
 
-        var strmPath = Path.Combine(folderPath, $"{folderName}.strm");
-        await File.WriteAllTextAsync(strmPath, item.StreamUrl ?? string.Empty, Encoding.UTF8, cancellationToken)
-            .ConfigureAwait(false);
-
-        var nfoPath = Path.Combine(folderPath, $"{folderName}.nfo");
-        await File.WriteAllTextAsync(nfoPath, BuildMovieNfo(item, peer), Encoding.UTF8, cancellationToken)
-            .ConfigureAwait(false);
-
-        await DownloadArtworkAsync(item.PosterUrl, Path.Combine(folderPath, "poster.jpg"), cancellationToken)
-            .ConfigureAwait(false);
-        await DownloadArtworkAsync(item.BackdropUrl, Path.Combine(folderPath, "fanart.jpg"), cancellationToken)
+        await WriteMovieFilesAsync(folderPath, item, peer, entry, itemKey, cancellationToken)
             .ConfigureAwait(false);
 
         _logger.LogInformation("Wrote movie: {Title} ({Year}) → {Path}", item.Title, item.Year, folderPath);
@@ -83,27 +88,270 @@ public class StrmWriter
     }
 
     /// <summary>
-    /// Writes a series item: folder, tvshow.nfo, poster and all seasons/episodes.
+    /// Rewrites the primary movie files (.strm, .nfo, artwork, sources sidecar).
     /// </summary>
-    /// <param name="contentRoot">Directory for this peer's series (e.g. {SeriesRoot}/{peer}/ or anime equivalent).</param>
-    /// <param name="item">The series catalog item.</param>
-    /// <param name="seasons">The seasons and episodes.</param>
-    /// <param name="peer">The source peer.</param>
+    /// <param name="folderPath">Existing movie folder path.</param>
+    /// <param name="item">Fresh catalog snapshot of the movie.</param>
+    /// <param name="peer">Peer that owns the primary source.</param>
+    /// <param name="entry">Logical manifest entry for the movie.</param>
+    /// <param name="itemKey">Logical manifest key.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>The folder path that was written.</returns>
+    /// <returns>A <see cref="Task"/> representing the asynchronous operation.</returns>
+    public async Task RewriteMoviePrimaryAsync(
+        string folderPath,
+        CatalogItemDto item,
+        PeerConfiguration peer,
+        ManifestEntry entry,
+        string itemKey,
+        CancellationToken cancellationToken)
+    {
+        Directory.CreateDirectory(folderPath);
+        await WriteMovieFilesAsync(folderPath, item, peer, entry, itemKey, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Refreshes only the provenance markers (peer/tag/studio) and sources sidecar of an existing movie.
+    /// </summary>
+    /// <param name="folderPath">Existing movie folder path.</param>
+    /// <param name="entry">Logical manifest entry for the movie.</param>
+    /// <param name="itemKey">Logical manifest key.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A <see cref="Task"/> representing the asynchronous operation.</returns>
+    public async Task RefreshMovieProvenanceAsync(
+        string folderPath,
+        ManifestEntry entry,
+        string itemKey,
+        CancellationToken cancellationToken)
+    {
+        var folderName = Path.GetFileName(folderPath);
+        var nfoPath = Path.Combine(folderPath, $"{folderName}.nfo");
+        await RewriteNfoProvenanceAsync(nfoPath, entry, cancellationToken).ConfigureAwait(false);
+        await WriteSourcesFileAsync(folderPath, entry, itemKey, "Movie", cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Rewrites only the movie .strm URL, keeping the existing NFO metadata in place.
+    /// Used when the primary source changes and JellyFed has a stream URL but not a full
+    /// fresh metadata snapshot yet.
+    /// </summary>
+    /// <param name="folderPath">Existing movie folder path.</param>
+    /// <param name="entry">Logical manifest entry for the movie.</param>
+    /// <param name="streamUrl">New primary stream URL.</param>
+    /// <param name="itemKey">Logical manifest key.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A <see cref="Task"/> representing the asynchronous operation.</returns>
+    [SuppressMessage("Security", "CA3003:Review code for file path injection vulnerabilities", Justification = "folderPath comes from persisted manifest data owned by JellyFed.")]
+    public async Task RewriteMovieStreamAsync(
+        string folderPath,
+        ManifestEntry entry,
+        string streamUrl,
+        string itemKey,
+        CancellationToken cancellationToken)
+    {
+        var folderName = Path.GetFileName(folderPath);
+        var strmPath = Path.Combine(folderPath, $"{folderName}.strm");
+        await File.WriteAllTextAsync(strmPath, streamUrl, Encoding.UTF8, cancellationToken)
+            .ConfigureAwait(false);
+
+        await RefreshMovieProvenanceAsync(folderPath, entry, itemKey, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Writes a new series item: folder, tvshow.nfo, poster and all seasons/episodes.
+    /// </summary>
+    /// <param name="contentRoot">Peer-scoped root where the series folder should be created.</param>
+    /// <param name="item">Catalog snapshot of the series.</param>
+    /// <param name="seasons">Fetched seasons and episodes for the primary source.</param>
+    /// <param name="peer">Peer that supplied the primary source.</param>
+    /// <param name="entry">Logical manifest entry for the series.</param>
+    /// <param name="itemKey">Logical manifest key.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The folder path written on disk.</returns>
     public async Task<string> WriteSeriesAsync(
         string contentRoot,
         CatalogItemDto item,
         SeasonsResponseDto seasons,
         PeerConfiguration peer,
+        ManifestEntry entry,
+        string itemKey,
         CancellationToken cancellationToken)
     {
         var folderName = SanitizeName($"{item.Title} ({item.Year})");
         var folderPath = Path.Combine(contentRoot, folderName);
         Directory.CreateDirectory(folderPath);
 
+        await WriteSeriesFilesAsync(folderPath, item, seasons, peer, entry, itemKey, true, cancellationToken)
+            .ConfigureAwait(false);
+
+        var epCount = seasons.Seasons.Sum(s => s.Episodes.Count);
+        _logger.LogInformation(
+            "Wrote series: {Title} — {SeasonCount} seasons, {EpCount} episodes → {Path}",
+            item.Title,
+            seasons.Seasons.Count,
+            epCount,
+            folderPath);
+
+        return folderPath;
+    }
+
+    /// <summary>
+    /// Rewrites the primary files for a series. Existing season folders are removed first so
+    /// the materialized episode list always matches the current primary source.
+    /// </summary>
+    /// <param name="folderPath">Existing series folder path.</param>
+    /// <param name="item">Fresh catalog snapshot of the series.</param>
+    /// <param name="seasons">Fetched seasons and episodes for the primary source.</param>
+    /// <param name="peer">Peer that owns the primary source.</param>
+    /// <param name="entry">Logical manifest entry for the series.</param>
+    /// <param name="itemKey">Logical manifest key.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A <see cref="Task"/> representing the asynchronous operation.</returns>
+    public async Task RewriteSeriesPrimaryAsync(
+        string folderPath,
+        CatalogItemDto item,
+        SeasonsResponseDto seasons,
+        PeerConfiguration peer,
+        ManifestEntry entry,
+        string itemKey,
+        CancellationToken cancellationToken)
+    {
+        Directory.CreateDirectory(folderPath);
+        await WriteSeriesFilesAsync(folderPath, item, seasons, peer, entry, itemKey, true, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Refreshes only the provenance markers (peer/tag/studio) and sources sidecar of an existing series.
+    /// </summary>
+    /// <param name="folderPath">Existing series folder path.</param>
+    /// <param name="entry">Logical manifest entry for the series.</param>
+    /// <param name="itemKey">Logical manifest key.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A <see cref="Task"/> representing the asynchronous operation.</returns>
+    public async Task RefreshSeriesProvenanceAsync(
+        string folderPath,
+        ManifestEntry entry,
+        string itemKey,
+        CancellationToken cancellationToken)
+    {
+        var tvshowNfoPath = Path.Combine(folderPath, "tvshow.nfo");
+        await RewriteNfoProvenanceAsync(tvshowNfoPath, entry, cancellationToken).ConfigureAwait(false);
+
+        foreach (var episodeNfo in Directory.EnumerateFiles(folderPath, "*.nfo", SearchOption.AllDirectories)
+                     .Where(static path => !string.Equals(Path.GetFileName(path), "tvshow.nfo", StringComparison.OrdinalIgnoreCase)))
+        {
+            await RewriteNfoProvenanceAsync(episodeNfo, entry, cancellationToken).ConfigureAwait(false);
+        }
+
+        await WriteSourcesFileAsync(folderPath, entry, itemKey, "Series", cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Rewrites only the episode materialization for a series, keeping the existing tvshow
+    /// metadata file in place. Used for primary-source failover groundwork.
+    /// </summary>
+    /// <param name="folderPath">Existing series folder path.</param>
+    /// <param name="seasons">Fetched seasons and episodes for the promoted primary source.</param>
+    /// <param name="entry">Logical manifest entry for the series.</param>
+    /// <param name="itemKey">Logical manifest key.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A <see cref="Task"/> representing the asynchronous operation.</returns>
+    [SuppressMessage("Security", "CA3003:Review code for file path injection vulnerabilities", Justification = "folderPath comes from persisted manifest data owned by JellyFed.")]
+    public async Task RewriteSeriesEpisodeStreamsAsync(
+        string folderPath,
+        SeasonsResponseDto seasons,
+        ManifestEntry entry,
+        string itemKey,
+        CancellationToken cancellationToken)
+    {
+        foreach (var seasonDir in Directory.EnumerateDirectories(folderPath, "Season *", SearchOption.TopDirectoryOnly))
+        {
+            Directory.Delete(seasonDir, true);
+        }
+
+        foreach (var season in seasons.Seasons)
+        {
+            var seasonNum = season.SeasonNumber ?? 0;
+            var seasonFolder = Path.Combine(folderPath, $"Season {seasonNum:D2}");
+            Directory.CreateDirectory(seasonFolder);
+
+            foreach (var ep in season.Episodes)
+            {
+                var epNum = ep.EpisodeNumber ?? 0;
+                var epName = SanitizeName($"S{seasonNum:D2}E{epNum:D2} - {ep.Title}");
+
+                var strmPath = Path.Combine(seasonFolder, $"{epName}.strm");
+                await File.WriteAllTextAsync(strmPath, ep.StreamUrl ?? string.Empty, Encoding.UTF8, cancellationToken)
+                    .ConfigureAwait(false);
+
+                var epNfoPath = Path.Combine(seasonFolder, $"{epName}.nfo");
+                await File.WriteAllTextAsync(epNfoPath, BuildEpisodeNfo(ep, seasonNum, entry), Encoding.UTF8, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+        }
+
+        await RefreshSeriesProvenanceAsync(folderPath, entry, itemKey, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Removes a previously synced item folder.
+    /// </summary>
+    /// <param name="folderPath">The item folder to remove.</param>
+    public void DeleteItem(string folderPath)
+    {
+        if (Directory.Exists(folderPath))
+        {
+            Directory.Delete(folderPath, true);
+            _logger.LogInformation("Deleted item: {Path}", folderPath);
+        }
+    }
+
+    private async Task WriteMovieFilesAsync(
+        string folderPath,
+        CatalogItemDto item,
+        PeerConfiguration peer,
+        ManifestEntry entry,
+        string itemKey,
+        CancellationToken cancellationToken)
+    {
+        var folderName = Path.GetFileName(folderPath);
+        var strmPath = Path.Combine(folderPath, $"{folderName}.strm");
+        await File.WriteAllTextAsync(strmPath, item.StreamUrl ?? string.Empty, Encoding.UTF8, cancellationToken)
+            .ConfigureAwait(false);
+
+        var nfoPath = Path.Combine(folderPath, $"{folderName}.nfo");
+        await File.WriteAllTextAsync(nfoPath, BuildMovieNfo(item, entry), Encoding.UTF8, cancellationToken)
+            .ConfigureAwait(false);
+
+        await DownloadArtworkAsync(item.PosterUrl, Path.Combine(folderPath, "poster.jpg"), cancellationToken)
+            .ConfigureAwait(false);
+        await DownloadArtworkAsync(item.BackdropUrl, Path.Combine(folderPath, "fanart.jpg"), cancellationToken)
+            .ConfigureAwait(false);
+
+        await WriteSourcesFileAsync(folderPath, entry, itemKey, "Movie", cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task WriteSeriesFilesAsync(
+        string folderPath,
+        CatalogItemDto item,
+        SeasonsResponseDto seasons,
+        PeerConfiguration peer,
+        ManifestEntry entry,
+        string itemKey,
+        bool replaceSeasonFolders,
+        CancellationToken cancellationToken)
+    {
+        if (replaceSeasonFolders)
+        {
+            foreach (var seasonDir in Directory.EnumerateDirectories(folderPath, "Season *", SearchOption.TopDirectoryOnly))
+            {
+                Directory.Delete(seasonDir, true);
+            }
+        }
+
         var nfoPath = Path.Combine(folderPath, "tvshow.nfo");
-        await File.WriteAllTextAsync(nfoPath, BuildSeriesNfo(item, peer), Encoding.UTF8, cancellationToken)
+        await File.WriteAllTextAsync(nfoPath, BuildSeriesNfo(item, entry), Encoding.UTF8, cancellationToken)
             .ConfigureAwait(false);
 
         await DownloadArtworkAsync(item.PosterUrl, Path.Combine(folderPath, "poster.jpg"), cancellationToken)
@@ -127,55 +375,78 @@ public class StrmWriter
                     .ConfigureAwait(false);
 
                 var epNfoPath = Path.Combine(seasonFolder, $"{epName}.nfo");
-                await File.WriteAllTextAsync(epNfoPath, BuildEpisodeNfo(ep, seasonNum, peer), Encoding.UTF8, cancellationToken)
+                await File.WriteAllTextAsync(epNfoPath, BuildEpisodeNfo(ep, seasonNum, entry), Encoding.UTF8, cancellationToken)
                     .ConfigureAwait(false);
             }
         }
 
-        var epCount = seasons.Seasons.Sum(s => s.Episodes.Count);
-        _logger.LogInformation(
-            "Wrote series: {Title} — {SeasonCount} seasons, {EpCount} episodes → {Path}",
-            item.Title,
-            seasons.Seasons.Count,
-            epCount,
-            folderPath);
-
-        return folderPath;
+        await WriteSourcesFileAsync(folderPath, entry, itemKey, "Series", cancellationToken).ConfigureAwait(false);
     }
 
-    /// <summary>
-    /// Rewrites the NFO file for an already-synced movie with fresh codec/track info.
-    /// Called during sync for existing manifest entries so that library rescans pick up
-    /// the correct stream metadata without requiring a full Reset Network.
-    /// </summary>
-    /// <param name="folderPath">The movie's existing folder path.</param>
-    /// <param name="item">The catalog item from the latest catalog fetch.</param>
-    /// <param name="peer">The source peer.</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>A <see cref="Task"/> representing the asynchronous operation.</returns>
-    public async Task UpdateMovieNfoAsync(
+    [SuppressMessage("Security", "CA3003:Review code for file path injection vulnerabilities", Justification = "folderPath comes from persisted manifest data owned by JellyFed.")]
+    private async Task WriteSourcesFileAsync(
         string folderPath,
-        CatalogItemDto item,
-        PeerConfiguration peer,
+        ManifestEntry entry,
+        string itemKey,
+        string itemType,
         CancellationToken cancellationToken)
     {
-        var folderName = Path.GetFileName(folderPath);
-        var nfoPath = Path.Combine(folderPath, $"{folderName}.nfo");
-        await File.WriteAllTextAsync(nfoPath, BuildMovieNfo(item, peer), Encoding.UTF8, cancellationToken)
+        var sourcesFile = new SourcesFile
+        {
+            ItemKey = itemKey,
+            ItemType = itemType,
+            PrimaryPeerName = entry.PeerName,
+            PrimaryJellyfinId = entry.JellyfinId,
+            Path = entry.Path,
+            SyncedAt = entry.SyncedAt,
+            Sources = entry.Sources
+                .OrderByDescending(source => string.Equals(source.PeerName, entry.PeerName, StringComparison.OrdinalIgnoreCase))
+                .ThenByDescending(SourcePixelCount)
+                .ThenBy(source => source.PeerName, StringComparer.OrdinalIgnoreCase)
+                .ToList(),
+            EpisodeSources = entry.EpisodeSources
+                .Select(group => new SeriesEpisodeSourceGroup
+                {
+                    SeasonNumber = group.SeasonNumber,
+                    EpisodeNumber = group.EpisodeNumber,
+                    Title = group.Title,
+                    Sources = group.Sources
+                        .OrderByDescending(source => string.Equals(source.PeerName, entry.PeerName, StringComparison.OrdinalIgnoreCase))
+                        .ThenByDescending(SourcePixelCount)
+                        .ThenBy(source => source.PeerName, StringComparer.OrdinalIgnoreCase)
+                        .ToList()
+                })
+                .OrderBy(group => group.SeasonNumber)
+                .ThenBy(group => group.EpisodeNumber)
+                .ToList()
+        };
+
+        var json = JsonSerializer.Serialize(sourcesFile, SourcesJsonOptions);
+        await File.WriteAllTextAsync(Path.Combine(folderPath, SourcesFileName), json, Encoding.UTF8, cancellationToken)
             .ConfigureAwait(false);
     }
 
-    /// <summary>
-    /// Removes a previously synced item folder.
-    /// </summary>
-    /// <param name="folderPath">The item folder to remove.</param>
-    public void DeleteItem(string folderPath)
+    [SuppressMessage("Security", "CA3003:Review code for file path injection vulnerabilities", Justification = "nfoPath comes from persisted manifest data owned by JellyFed.")]
+    private async Task RewriteNfoProvenanceAsync(
+        string nfoPath,
+        ManifestEntry entry,
+        CancellationToken cancellationToken)
     {
-        if (Directory.Exists(folderPath))
+        if (!File.Exists(nfoPath))
         {
-            Directory.Delete(folderPath, true);
-            _logger.LogInformation("Deleted item: {Path}", folderPath);
+            return;
         }
+
+        var xml = await File.ReadAllTextAsync(nfoPath, cancellationToken).ConfigureAwait(false);
+        var doc = XDocument.Parse(xml, LoadOptions.PreserveWhitespace);
+        var root = doc.Root;
+        if (root is null)
+        {
+            return;
+        }
+
+        ApplyProvenance(root, entry);
+        await File.WriteAllTextAsync(nfoPath, doc.ToString(), Encoding.UTF8, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task DownloadArtworkAsync(string? url, string localPath, CancellationToken cancellationToken)
@@ -188,7 +459,7 @@ public class StrmWriter
         await _peerClient.DownloadImageAsync(url, localPath, cancellationToken).ConfigureAwait(false);
     }
 
-    private static string BuildMovieNfo(CatalogItemDto item, PeerConfiguration peer)
+    private static string BuildMovieNfo(CatalogItemDto item, ManifestEntry entry)
     {
         var movieEl = new XElement(
             "movie",
@@ -199,13 +470,10 @@ public class StrmWriter
             new XElement("runtime", item.RuntimeMinutes),
             new XElement("rating", item.VoteAverage?.ToString("F1", CultureInfo.InvariantCulture)),
             item.Genres.Select(g => new XElement("genre", g)),
-            BuildUniqueIds(item),
-            new XElement("jellyfed_peer", peer.Name),
-            new XElement("jellyfed_id", item.JellyfinId));
+            BuildUniqueIds(item));
 
-        // Embed codec metadata so Jellyfin knows the format during library scan.
-        // Without this, Jellyfin has no codec info for .strm remote URLs and defaults
-        // to direct-play — the browser receives raw MKV/HEVC and crashes.
+        AddProvenance(movieEl, entry);
+
         var fileInfo = BuildFileInfo(item.VideoCodec, item.Width, item.Height, item.MediaStreams, item.AudioCodec);
         if (fileInfo is not null)
         {
@@ -215,26 +483,24 @@ public class StrmWriter
         return new XDocument(new XDeclaration("1.0", "UTF-8", "yes"), movieEl).ToString();
     }
 
-    private static string BuildSeriesNfo(CatalogItemDto item, PeerConfiguration peer)
+    private static string BuildSeriesNfo(CatalogItemDto item, ManifestEntry entry)
     {
-        var doc = new XDocument(
-            new XDeclaration("1.0", "UTF-8", "yes"),
-            new XElement(
-                "tvshow",
-                new XElement("title", item.Title),
-                new XElement("originaltitle", item.OriginalTitle ?? item.Title),
-                new XElement("year", item.Year),
-                new XElement("plot", item.Overview ?? string.Empty),
-                new XElement("rating", item.VoteAverage?.ToString("F1", CultureInfo.InvariantCulture)),
-                item.Genres.Select(g => new XElement("genre", g)),
-                BuildUniqueIds(item),
-                new XElement("jellyfed_peer", peer.Name),
-                new XElement("jellyfed_id", item.JellyfinId)));
+        var tvshowEl = new XElement(
+            "tvshow",
+            new XElement("title", item.Title),
+            new XElement("originaltitle", item.OriginalTitle ?? item.Title),
+            new XElement("year", item.Year),
+            new XElement("plot", item.Overview ?? string.Empty),
+            new XElement("rating", item.VoteAverage?.ToString("F1", CultureInfo.InvariantCulture)),
+            item.Genres.Select(g => new XElement("genre", g)),
+            BuildUniqueIds(item));
 
-        return doc.ToString();
+        AddProvenance(tvshowEl, entry);
+
+        return new XDocument(new XDeclaration("1.0", "UTF-8", "yes"), tvshowEl).ToString();
     }
 
-    private static string BuildEpisodeNfo(EpisodeDto ep, int seasonNumber, PeerConfiguration peer)
+    private static string BuildEpisodeNfo(EpisodeDto ep, int seasonNumber, ManifestEntry entry)
     {
         var epEl = new XElement(
             "episodedetails",
@@ -243,9 +509,9 @@ public class StrmWriter
             new XElement("episode", ep.EpisodeNumber),
             new XElement("plot", ep.Overview ?? string.Empty),
             new XElement("aired", ep.AirDate ?? string.Empty),
-            new XElement("runtime", ep.RuntimeMinutes),
-            new XElement("jellyfed_peer", peer.Name),
-            new XElement("jellyfed_id", ep.JellyfinId));
+            new XElement("runtime", ep.RuntimeMinutes));
+
+        AddProvenance(epEl, entry);
 
         var fileInfo = BuildFileInfo(ep.VideoCodec, ep.Width, ep.Height, ep.MediaStreams, ep.AudioCodec);
         if (fileInfo is not null)
@@ -254,6 +520,54 @@ public class StrmWriter
         }
 
         return new XDocument(new XDeclaration("1.0", "UTF-8", "yes"), epEl).ToString();
+    }
+
+    private static void AddProvenance(XElement root, ManifestEntry entry)
+    {
+        ApplyProvenance(root, entry);
+    }
+
+    private static void ApplyProvenance(XElement root, ManifestEntry entry)
+    {
+        root.Elements("jellyfed_peer").Remove();
+        root.Elements("jellyfed_id").Remove();
+        root.Elements("jellyfed_source_count").Remove();
+
+        foreach (var studio in root.Elements("studio")
+                     .Where(static element => element.Value.StartsWith("JellyFed:", StringComparison.OrdinalIgnoreCase))
+                     .ToList())
+        {
+            studio.Remove();
+        }
+
+        foreach (var tag in root.Elements("tag")
+                     .Where(static element =>
+                         string.Equals(element.Value, "JellyFed", StringComparison.OrdinalIgnoreCase) ||
+                         element.Value.StartsWith("JellyFed:", StringComparison.OrdinalIgnoreCase))
+                     .ToList())
+        {
+            tag.Remove();
+        }
+
+        root.Add(new XElement("jellyfed_peer", entry.PeerName));
+        root.Add(new XElement("jellyfed_id", entry.JellyfinId));
+        root.Add(new XElement("jellyfed_source_count", entry.Sources.Count));
+        root.Add(new XElement("tag", "JellyFed"));
+        root.Add(new XElement("tag", $"JellyFed:primary:{entry.PeerName}"));
+
+        if (entry.Sources.Count > 1)
+        {
+            root.Add(new XElement("tag", "JellyFed:multi-source"));
+        }
+
+        foreach (var source in entry.Sources
+                     .OrderByDescending(source => string.Equals(source.PeerName, entry.PeerName, StringComparison.OrdinalIgnoreCase))
+                     .ThenByDescending(SourcePixelCount)
+                     .ThenBy(source => source.PeerName, StringComparer.OrdinalIgnoreCase))
+        {
+            root.Add(new XElement("studio", $"JellyFed:{source.PeerName}"));
+            root.Add(new XElement("tag", $"JellyFed:source:{source.PeerName}"));
+        }
     }
 
     private static XElement? BuildFileInfo(
@@ -286,8 +600,6 @@ public class StrmWriter
 
         var streamdetails = new XElement("streamdetails", videoEl);
 
-        // Audio and subtitle tracks — written in stream order so Jellyfin respects
-        // IsDefault/IsForced flags when presenting language/track selectors.
         bool hasAudio = false;
         foreach (var s in mediaStreams)
         {
@@ -329,7 +641,6 @@ public class StrmWriter
             }
         }
 
-        // Fallback: if older source plugin didn't send MediaStreams, use the scalar AudioCodec.
         if (!hasAudio && !string.IsNullOrEmpty(fallbackAudioCodec))
         {
             streamdetails.Add(new XElement("audio", new XElement("codec", fallbackAudioCodec)));
@@ -361,6 +672,9 @@ public class StrmWriter
 
         return [];
     }
+
+    private static int SourcePixelCount(ManifestSource source)
+        => (source.Width ?? 0) * (source.Height ?? 0);
 
     private static string SanitizeName(string name)
     {

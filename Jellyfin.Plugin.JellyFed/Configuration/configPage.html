@@ -37,6 +37,9 @@
                     .jf-peer-details.open { display:block; }
                     .jf-peer-details code { background:#1a1a1a; padding:.1em .4em; border-radius:3px; font-size:.85em; }
                     .jf-peer-error { margin-top:.5em; color:#e07070; font-size:.85em; font-family:monospace; white-space:pre-wrap; word-break:break-word; }
+                    .jf-peer-section { margin-top:1.5em; }
+                    .jf-peer-section:first-of-type { margin-top:0; }
+                    .jf-inline-note { color:#aaa; font-size:.9em; }
                     .jf-modal-backdrop { position:fixed; inset:0; background:rgba(0,0,0,.6); display:none; align-items:center; justify-content:center; z-index:9999; }
                     .jf-modal-backdrop.open { display:flex; }
                     .jf-modal { background:#1e1e1e; border:1px solid #444; border-radius:6px; padding:1.5em; min-width:320px; max-width:90vw; }
@@ -44,6 +47,17 @@
                     .jf-readme-section pre { background:#111; border:1px solid #333; border-radius:4px; padding:1em; overflow:auto; font-size:.85em; line-height:1.4; }
                     .jf-readme-section ol { padding-left:1.5em; line-height:1.8; }
                     .jf-readme-section code { background:#1a1a1a; padding:.1em .4em; border-radius:3px; }
+                    .jf-log-summary { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:.75em; margin-bottom:1em; }
+                    .jf-log-card { border:1px solid #333; border-radius:6px; padding:.85em; background:rgba(255,255,255,.02); }
+                    .jf-log-card strong { display:block; font-size:1.35em; color:#fff; }
+                    .jf-log-feed { display:flex; flex-direction:column; gap:.75em; }
+                    .jf-log-entry { border:1px solid #333; border-radius:6px; padding:.85em 1em; background:rgba(255,255,255,.02); }
+                    .jf-log-entry-head { display:flex; gap:.5em; flex-wrap:wrap; align-items:center; margin-bottom:.35em; }
+                    .jf-log-entry-meta { color:#aaa; font-size:.82em; }
+                    .jf-log-entry pre { margin:.6em 0 0; padding:.75em; border-radius:4px; background:#111; color:#bbb; font-size:.8em; overflow:auto; }
+                    .jf-sev-info { color:#9bc9ff; }
+                    .jf-sev-warning { color:#f0c674; }
+                    .jf-sev-error { color:#e07070; }
                 </style>
 
                 <div class="sectionTitleContainer flex align-items-center">
@@ -54,6 +68,7 @@
                     <button type="button" class="jf-tab active" data-tab="readme">Readme</button>
                     <button type="button" class="jf-tab" data-tab="settings">Settings</button>
                     <button type="button" class="jf-tab" data-tab="peers">Peers</button>
+                    <button type="button" class="jf-tab" data-tab="logs">Logs</button>
                     <button type="button" class="jf-tab" data-tab="danger">Danger Zone</button>
                 </div>
 
@@ -99,7 +114,8 @@
                             </li>
                             <li>
                                 Onglet <strong>Peers</strong> → <em>Add peer</em>. Renseigne le nom, l'URL et le token
-                                partagés par le peer distant. L'auto-registration prévient l'autre côté automatiquement.
+                                partagés par le peer distant. Les peers découverts restent des suggestions : un admin doit
+                                toujours confirmer l'ajout manuel avant toute sync.
                             </li>
                             <li>
                                 Ajoute des bibliothèques Jellyfin pointant vers <code>{MoviesRoot}</code>, <code>{SeriesRoot}</code>
@@ -212,7 +228,17 @@
                             <label class="inputLabel inputLabelUnfocused" for="selfUrl">Self URL</label>
                             <input id="selfUrl" name="SelfUrl" type="text" class="emby-input" placeholder="http://my-jellyfin:8096" />
                             <div class="fieldDescription">
-                                URL by which this instance is reachable from peers. Used for automatic bidirectional registration.
+                                URL by which this instance is reachable from peers. Used in discovery suggestions and manual federation setup.
+                            </div>
+                        </div>
+
+                        <div class="checkboxContainer checkboxContainer-withDescription">
+                            <label>
+                                <input id="discoverable" name="Discoverable" type="checkbox" class="emby-checkbox" />
+                                <span>Allow this instance to appear in second-hop discovery suggestions</span>
+                            </label>
+                            <div class="fieldDescription">
+                                When disabled, your direct peers can still connect manually, but they will not relay this server to other admins.
                             </div>
                         </div>
 
@@ -257,18 +283,37 @@
                         </button>
                     </div>
 
-                    <div id="peersContainer">
-                        <!-- Peer cards rendered here by JS -->
+                    <div class="jf-peer-section">
+                        <div class="sectionTitleContainer">
+                            <h2 class="sectionTitle">Direct peers</h2>
+                        </div>
+                        <div class="fieldDescription" style="margin-bottom:1em;">
+                            Configured peers that can sync content. Removing one also blocks its URL from discovery suggestions until you unblock it.
+                        </div>
+                        <div id="peersContainer">
+                            <!-- Peer cards rendered here by JS -->
+                        </div>
+                        <p id="peersEmpty" style="display:none;color:#888;">No direct peers configured yet. Click <strong>Add peer</strong>.</p>
                     </div>
 
-                    <p id="peersEmpty" style="display:none;color:#888;">No peers configured yet. Click <strong>Add peer</strong>.</p>
+                    <div class="jf-peer-section">
+                        <div class="sectionTitleContainer">
+                            <h2 class="sectionTitle">Discovered peers</h2>
+                        </div>
+                        <div class="fieldDescription" style="margin-bottom:1em;">
+                            Suggestions learned from your direct peers. They never sync until an admin adds them manually.
+                            <span id="discoverableState" class="jf-inline-note"></span>
+                        </div>
+                        <div id="discoveredPeersContainer"></div>
+                        <p id="discoveredPeersEmpty" style="display:none;color:#888;">No discovery suggestions right now.</p>
+                    </div>
 
                     <div class="sectionTitleContainer" style="margin-top: 2em;">
                         <h2 class="sectionTitle">Blocked peers</h2>
                     </div>
 
                     <div class="fieldDescription" style="margin-bottom: 1em;">
-                        Peers that were manually removed. They cannot auto-register again unless unblocked.
+                        Peers that were manually removed. They stay hidden from discovery suggestions until unblocked.
                     </div>
 
                     <div id="blockedPeersContainer"></div>
@@ -279,6 +324,54 @@
                             <span>Save blocked list</span>
                         </button>
                         <span id="blockedStatus" style="color:#aaa;font-size:.9em;margin-left:.75em;"></span>
+                    </div>
+
+                    <div class="jf-peer-section" style="margin-top:2em;">
+                        <div class="sectionTitleContainer">
+                            <h2 class="sectionTitle">Multi-source selector</h2>
+                        </div>
+                        <div class="fieldDescription" style="margin-bottom:1em;">
+                            Federated items that currently exist on multiple peers. Pick a different primary source to rewrite local playback toward that peer.
+                        </div>
+                        <div style="display:flex;gap:.75em;flex-wrap:wrap;align-items:center;margin-bottom:1em;">
+                            <input type="text" id="sourceSearchInput" class="emby-input" placeholder="Search title, key or peer" style="min-width:18rem;flex:1;" />
+                            <button type="button" id="refreshSourcesBtn" class="emby-button raised"><span>Refresh sources</span></button>
+                            <span id="sourcesStatus" style="color:#aaa;font-size:.9em;"></span>
+                        </div>
+                        <div id="multiSourceContainer"></div>
+                        <p id="multiSourceEmpty" style="display:none;color:#888;">No multi-source items right now.</p>
+                    </div>
+
+                </section>
+
+                <!-- ══════════════ Logs tab ══════════════ -->
+                <section class="jf-tab-panel" data-panel="logs">
+
+                    <div style="display:flex;align-items:center;gap:.75em;flex-wrap:wrap;margin-bottom:1em;">
+                        <select id="logsScopeSelect" class="emby-select">
+                            <option value="all">All logs</option>
+                            <option value="security">Security logs</option>
+                            <option value="peer-connections">Peer connection logs</option>
+                            <option value="peer-access">Peer access history</option>
+                        </select>
+                        <select id="logsPeerSelect" class="emby-select">
+                            <option value="">All peers</option>
+                        </select>
+                        <button type="button" id="refreshLogsBtn" class="emby-button raised">
+                            <span>Refresh</span>
+                        </button>
+                        <span id="logsStatus" style="color:#aaa;font-size:.9em;">Admin-only audit feed.</span>
+                    </div>
+
+                    <div id="logsSummary" class="jf-log-summary"></div>
+
+                    <div id="logsFeed" class="jf-log-feed"></div>
+                    <p id="logsEmpty" style="display:none;color:#888;">No audit records yet.</p>
+
+                    <div style="margin-top:1em;">
+                        <button type="button" id="loadMoreLogsBtn" class="emby-button raised" style="display:none;">
+                            <span>Load more</span>
+                        </button>
                     </div>
 
                 </section>
@@ -342,6 +435,7 @@
                 var pluginId = 'ff0164d7-e8c0-44c1-bc61-45017125a155';
                 var config = {};
                 var peerDetailsCache = [];
+                var logsState = { scope: 'all', peerId: '', beforeId: null, hasMore: false, items: [] };
 
                 // Base-path aware fetch helper (supports Jellyfin behind a reverse proxy with sub-path).
                 var _basePath = window.location.pathname.split('/web/')[0].replace(/\/$/, '');
@@ -393,6 +487,18 @@
                         moviesFolder: pick(raw, 'moviesFolder'),
                         seriesFolder: pick(raw, 'seriesFolder'),
                         animeFolder: pick(raw, 'animeFolder')
+                    };
+                }
+
+                function normalizeDiscoveredPeer(raw) {
+                    return {
+                        name: pick(raw, 'name'),
+                        url: pick(raw, 'url'),
+                        federationToken: pick(raw, 'federationToken'),
+                        sourcePeerName: pick(raw, 'sourcePeerName'),
+                        version: pick(raw, 'version'),
+                        hopCount: pick(raw, 'hopCount') || 2,
+                        lastDiscoveredAt: pick(raw, 'lastDiscoveredAt')
                     };
                 }
 
@@ -470,6 +576,8 @@
                     });
                     if (tabId === 'peers') {
                         loadPeerDetails(page);
+                    } else if (tabId === 'logs') {
+                        refreshLogs(page);
                     }
                 }
 
@@ -481,7 +589,7 @@
                             'Federation token not set. Finish Settings tab first.';
                         return;
                     }
-                    fetch(jellyFedUrl('/JellyFed/peers/details'), {
+                    fetch(jellyFedUrl('/JellyFed/v1/peers/details'), {
                         headers: authHeaders(false)
                     }).then(function (r) {
                         if (!r.ok) { throw new Error('HTTP ' + r.status); }
@@ -489,24 +597,35 @@
                     }).then(function (data) {
                         console.log('[JellyFed] peers/details raw response:', data);
                         var rawPeers = pick(data, 'peers') || [];
+                        var rawDiscoveredPeers = pick(data, 'discoveredPeers') || [];
+                        var selfDiscoverable = !!pick(data, 'selfDiscoverable');
                         peerDetailsCache = rawPeers.map(normalizePeer);
+                        var discoveredPeers = rawDiscoveredPeers.map(normalizeDiscoveredPeer);
                         var lastGlobal = pick(data, 'lastGlobalSyncAt');
                         console.log('[JellyFed] peers/details —', peerDetailsCache.length + ' peer(s); lastGlobalSyncAt=', lastGlobal);
-                        renderPeerDetails(page, peerDetailsCache, lastGlobal);
+                        renderPeerDetails(page, peerDetailsCache, discoveredPeers, lastGlobal, selfDiscoverable);
                         loadBlocked(page);
+                        loadMultiSourceItems(page);
                     }).catch(function (err) {
                         console.error('[JellyFed] peers/details — error:', err);
                         page.querySelector('#peersHeaderStatus').textContent = 'Error: ' + err.message;
                     });
                 }
 
-                function renderPeerDetails(page, peers, lastGlobal) {
+                function renderPeerDetails(page, peers, discoveredPeers, lastGlobal, selfDiscoverable) {
                     var header = page.querySelector('#peersHeaderStatus');
                     var count = (peers && peers.length) || 0;
+                    var discoveredCount = (discoveredPeers && discoveredPeers.length) || 0;
                     var syncPart = lastGlobal
                         ? 'last sync ' + formatRelative(lastGlobal) + ' (' + new Date(lastGlobal).toLocaleString() + ')'
                         : 'no sync yet';
-                    header.textContent = count + ' peer' + (count === 1 ? '' : 's') + ' · ' + syncPart;
+                    header.textContent = count + ' direct peer' + (count === 1 ? '' : 's') +
+                        ' · ' + discoveredCount + ' discovered peer' + (discoveredCount === 1 ? '' : 's') +
+                        ' · ' + syncPart;
+
+                    page.querySelector('#discoverableState').textContent = selfDiscoverable
+                        ? 'This instance is discoverable to second-hop admins.'
+                        : 'This instance is hidden from second-hop discovery.';
 
                     var container = page.querySelector('#peersContainer');
                     var empty = page.querySelector('#peersEmpty');
@@ -514,6 +633,7 @@
 
                     if (!peers || peers.length === 0) {
                         empty.style.display = 'block';
+                        renderDiscoveredPeers(page, discoveredPeers || []);
                         return;
                     }
                     empty.style.display = 'none';
@@ -521,6 +641,51 @@
                     peers.forEach(function (peer) {
                         container.appendChild(buildPeerCard(page, peer));
                     });
+
+                    renderDiscoveredPeers(page, discoveredPeers || []);
+                }
+
+                function renderDiscoveredPeers(page, peers) {
+                    var container = page.querySelector('#discoveredPeersContainer');
+                    var empty = page.querySelector('#discoveredPeersEmpty');
+                    container.innerHTML = '';
+
+                    if (!peers || peers.length === 0) {
+                        empty.style.display = 'block';
+                        return;
+                    }
+
+                    empty.style.display = 'none';
+                    peers.forEach(function (peer) {
+                        container.appendChild(buildDiscoveredPeerCard(page, peer));
+                    });
+                }
+
+                function buildDiscoveredPeerCard(page, peer) {
+                    var card = document.createElement('div');
+                    card.className = 'jf-peer-card';
+                    card.innerHTML =
+                        '<div class="jf-peer-head">' +
+                            '<span class="jf-peer-name">' + escHtml(peer.name || peer.url) + '</span>' +
+                            (peer.version ? '<span class="jf-badge">v' + escHtml(peer.version) + '</span>' : '') +
+                            '<span class="jf-badge">' + escHtml(peer.hopCount + '-hop') + '</span>' +
+                        '</div>' +
+                        '<div class="jf-peer-url">' + escHtml(peer.url) + '</div>' +
+                        '<div class="jf-peer-meta">via ' + escHtml(peer.sourcePeerName || 'unknown peer') +
+                            ' · last seen in discovery ' + escHtml(formatRelative(peer.lastDiscoveredAt)) + '</div>' +
+                        '<div class="jf-peer-actions">' +
+                            '<button type="button" class="emby-button raised jf-add-discovered"><span>Add manually</span></button>' +
+                        '</div>';
+
+                    card.querySelector('.jf-add-discovered').addEventListener('click', function () {
+                        openAddPeer(page, {
+                            name: peer.name,
+                            url: peer.url,
+                            federationToken: peer.federationToken
+                        });
+                    });
+
+                    return card;
                 }
 
                 function buildPeerCard(page, peer) {
@@ -609,7 +774,7 @@
                 }
 
                 function patchPeer(page, name, body) {
-                    return fetch(jellyFedUrl('/JellyFed/peer/' + encodeURIComponent(name)), {
+                    return fetch(jellyFedUrl('/JellyFed/v1/peer/' + encodeURIComponent(name)), {
                         method: 'PATCH',
                         headers: authHeaders(true),
                         body: JSON.stringify(body)
@@ -628,7 +793,7 @@
                 function resyncPeer(page, name, btn) {
                     btn.disabled = true;
                     btn.querySelector('span').textContent = 'Syncing…';
-                    fetch(jellyFedUrl('/JellyFed/peer/' + encodeURIComponent(name) + '/sync'), {
+                    fetch(jellyFedUrl('/JellyFed/v1/peer/' + encodeURIComponent(name) + '/sync'), {
                         method: 'POST',
                         headers: authHeaders(false)
                     }).then(function (r) {
@@ -656,7 +821,7 @@
                     }
                     btn.disabled = true;
                     btn.querySelector('span').textContent = 'Purging…';
-                    fetch(jellyFedUrl('/JellyFed/peer/' + encodeURIComponent(name) + '/purge'), {
+                    fetch(jellyFedUrl('/JellyFed/v1/peer/' + encodeURIComponent(name) + '/purge'), {
                         method: 'POST',
                         headers: authHeaders(false)
                     }).then(function (r) {
@@ -676,12 +841,12 @@
                 }
 
                 function removePeer(page, name, btn) {
-                    if (!confirm('Remove peer "' + name + '"?\n\nThis deletes all .strm files, revokes the access token and blocks the URL from auto-registration.\n\nThis cannot be undone without unblocking.')) {
+                    if (!confirm('Remove peer "' + name + '"?\n\nThis deletes all .strm files, revokes the access token and hides the URL from discovery suggestions until you unblock it.\n\nThis cannot be undone without unblocking.')) {
                         return;
                     }
                     btn.disabled = true;
                     btn.querySelector('span').textContent = 'Removing…';
-                    fetch(jellyFedUrl('/JellyFed/peer/' + encodeURIComponent(name) + '/remove'), {
+                    fetch(jellyFedUrl('/JellyFed/v1/peer/' + encodeURIComponent(name) + '/remove'), {
                         method: 'POST',
                         headers: authHeaders(false)
                     }).then(function (r) {
@@ -759,11 +924,110 @@
                     }).catch(function () { status.textContent = 'Error.'; });
                 }
 
+                function setSourcesStatus(page, text, color) {
+                    var el = page.querySelector('#sourcesStatus');
+                    if (!el) { return; }
+                    el.textContent = text || '';
+                    el.style.color = color || '#aaa';
+                }
+
+                function loadMultiSourceItems(page) {
+                    var search = (page.querySelector('#sourceSearchInput').value || '').trim();
+                    setSourcesStatus(page, 'Loading multi-source items…');
+                    return fetch(jellyFedUrl('/JellyFed/v1/admin/sources?limit=100' + (search ? '&search=' + encodeURIComponent(search) : '')), {
+                        method: 'GET',
+                        headers: authHeaders(false)
+                    }).then(function (r) {
+                        if (!r.ok) { throw new Error('HTTP ' + r.status); }
+                        return r.json();
+                    }).then(function (data) {
+                        renderMultiSourceItems(page, (data && data.items) || []);
+                    }).catch(function (err) {
+                        setSourcesStatus(page, 'Error: ' + err.message, '#e07070');
+                    });
+                }
+
+                function renderMultiSourceItems(page, items) {
+                    var container = page.querySelector('#multiSourceContainer');
+                    var empty = page.querySelector('#multiSourceEmpty');
+                    container.innerHTML = '';
+
+                    if (!items || items.length === 0) {
+                        empty.style.display = 'block';
+                        setSourcesStatus(page, 'No multi-source items found.');
+                        return;
+                    }
+
+                    empty.style.display = 'none';
+                    setSourcesStatus(page, items.length + ' multi-source item(s)');
+
+                    items.forEach(function (item) {
+                        var card = document.createElement('div');
+                        card.className = 'jf-peer-card';
+                        card.innerHTML =
+                            '<div class="jf-peer-head">' +
+                                '<span class="jf-peer-name">' + escHtml(item.title || item.itemKey) + '</span>' +
+                                '<span class="jf-badge">' + escHtml(item.itemType || 'Item') + '</span>' +
+                                '<span class="jf-badge">primary: ' + escHtml(item.primaryPeerName || 'unknown') + '</span>' +
+                            '</div>' +
+                            '<div class="jf-peer-meta"><code>' + escHtml(item.itemKey || '') + '</code></div>' +
+                            '<div class="jf-peer-actions" style="flex-wrap:wrap;"></div>';
+
+                        var actions = card.querySelector('.jf-peer-actions');
+                        (item.sources || []).forEach(function (source) {
+                            var btn = document.createElement('button');
+                            btn.type = 'button';
+                            btn.className = 'emby-button raised';
+                            var label = source.peerName || 'unknown';
+                            if (source.width && source.height) {
+                                label += ' · ' + source.width + 'x' + source.height;
+                            }
+                            if (item.primaryPeerName && source.peerName === item.primaryPeerName) {
+                                btn.disabled = true;
+                                label += ' · active';
+                            }
+                            btn.innerHTML = '<span>' + escHtml(label) + '</span>';
+                            btn.addEventListener('click', function () {
+                                selectPrimarySource(page, item, source.peerName, btn);
+                            });
+                            actions.appendChild(btn);
+                        });
+
+                        container.appendChild(card);
+                    });
+                }
+
+                function selectPrimarySource(page, item, peerName, btn) {
+                    btn.disabled = true;
+                    var span = btn.querySelector('span');
+                    var old = span.textContent;
+                    span.textContent = 'Switching…';
+                    fetch(jellyFedUrl('/JellyFed/v1/admin/sources/select'), {
+                        method: 'POST',
+                        headers: authHeaders(true),
+                        body: JSON.stringify({ ItemType: item.itemType, ItemKey: item.itemKey, PeerName: peerName })
+                    }).then(function (r) {
+                        if (!r.ok) {
+                            return readErrorMessage(r).then(function (msg) { throw new Error(msg); });
+                        }
+                        return r.json();
+                    }).then(function () {
+                        setSourcesStatus(page, 'Primary source updated for ' + (item.title || item.itemKey) + '.', '#52b788');
+                        loadMultiSourceItems(page);
+                        loadPeerDetails(page);
+                    }).catch(function (err) {
+                        btn.disabled = false;
+                        span.textContent = old;
+                        setSourcesStatus(page, 'Error: ' + err.message, '#e07070');
+                    });
+                }
+
                 // ── Add peer modal ────────────────────────────────────────────
-                function openAddPeer(page) {
-                    page.querySelector('#addPeerName').value = '';
-                    page.querySelector('#addPeerUrl').value = '';
-                    page.querySelector('#addPeerToken').value = '';
+                function openAddPeer(page, seed) {
+                    seed = seed || {};
+                    page.querySelector('#addPeerName').value = seed.name || '';
+                    page.querySelector('#addPeerUrl').value = seed.url || '';
+                    page.querySelector('#addPeerToken').value = seed.federationToken || '';
                     page.querySelector('#addPeerStatus').textContent = '';
                     page.querySelector('#addPeerStatus').style.color = '#aaa';
                     page.querySelector('#addPeerModal').classList.add('open');
@@ -799,7 +1063,7 @@
                     status.textContent = 'Testing ' + url + ' …';
                     testBtn.disabled = true;
                     testBtn.querySelector('span').textContent = 'Testing…';
-                    fetch(jellyFedUrl('/JellyFed/peers/test'), {
+                    fetch(jellyFedUrl('/JellyFed/v1/peers/test'), {
                         method: 'POST',
                         headers: authHeaders(true),
                         body: JSON.stringify({ Url: url, FederationToken: token })
@@ -835,7 +1099,7 @@
                     status.textContent = 'Adding peer…';
                     addBtn.disabled = true;
                     addBtn.querySelector('span').textContent = 'Adding…';
-                    fetch(jellyFedUrl('/JellyFed/peers'), {
+                    fetch(jellyFedUrl('/JellyFed/v1/peers'), {
                         method: 'POST',
                         headers: authHeaders(true),
                         body: JSON.stringify({
@@ -866,6 +1130,168 @@
                     });
                 }
 
+                // ── Logs tab ────────────────────────────────────────────────
+                function setLogsStatus(page, text, color) {
+                    var el = page.querySelector('#logsStatus');
+                    el.style.color = color || '#aaa';
+                    el.textContent = text || '';
+                }
+
+                function normalizeLogEntry(raw) {
+                    return {
+                        id: pick(raw, 'id'),
+                        createdAt: pick(raw, 'createdAt'),
+                        category: pick(raw, 'category') || 'general',
+                        eventType: pick(raw, 'eventType') || 'event',
+                        severity: pick(raw, 'severity') || 'info',
+                        message: pick(raw, 'message') || '',
+                        peerId: pick(raw, 'peerId'),
+                        peerName: pick(raw, 'peerName'),
+                        peerUrl: pick(raw, 'peerUrl'),
+                        actorType: pick(raw, 'actorType'),
+                        authMode: pick(raw, 'authMode'),
+                        method: pick(raw, 'method'),
+                        path: pick(raw, 'path'),
+                        statusCode: pick(raw, 'statusCode'),
+                        remoteIp: pick(raw, 'remoteIp'),
+                        detailsJson: pick(raw, 'detailsJson')
+                    };
+                }
+
+                function normalizeLogOverview(raw) {
+                    return {
+                        totalCount: pick(raw, 'totalCount') || 0,
+                        securityCount: pick(raw, 'securityCount') || 0,
+                        peerConnectionCount: pick(raw, 'peerConnectionCount') || 0,
+                        peerAccessCount: pick(raw, 'peerAccessCount') || 0,
+                        last24HoursCount: pick(raw, 'last24HoursCount') || 0,
+                        lastEventAt: pick(raw, 'lastEventAt'),
+                        peers: (pick(raw, 'peers') || []).map(function (peer) {
+                            return {
+                                peerId: pick(peer, 'peerId') || '',
+                                name: pick(peer, 'name') || '(unknown peer)',
+                                url: pick(peer, 'url') || ''
+                            };
+                        })
+                    };
+                }
+
+                function renderLogsOverview(page, overview) {
+                    var container = page.querySelector('#logsSummary');
+                    container.innerHTML = [
+                        { label: 'Total', value: overview.totalCount },
+                        { label: 'Security', value: overview.securityCount },
+                        { label: 'Peer connections', value: overview.peerConnectionCount },
+                        { label: 'Peer access', value: overview.peerAccessCount },
+                        { label: 'Last 24h', value: overview.last24HoursCount },
+                        { label: 'Last event', value: overview.lastEventAt ? formatRelative(overview.lastEventAt) : 'never' }
+                    ].map(function (card) {
+                        return '<div class="jf-log-card"><div>' + escHtml(card.label) + '</div><strong>' + escHtml(card.value) + '</strong></div>';
+                    }).join('');
+
+                    var peerSelect = page.querySelector('#logsPeerSelect');
+                    var current = peerSelect.value;
+                    peerSelect.innerHTML = '<option value="">All peers</option>' + overview.peers.map(function (peer) {
+                        var label = peer.url ? (peer.name + ' · ' + peer.url) : peer.name;
+                        return '<option value="' + escHtml(peer.peerId) + '">' + escHtml(label) + '</option>';
+                    }).join('');
+                    peerSelect.value = current || logsState.peerId || '';
+                }
+
+                function renderLogsFeed(page, append) {
+                    var feed = page.querySelector('#logsFeed');
+                    var empty = page.querySelector('#logsEmpty');
+                    if (!append) {
+                        feed.innerHTML = '';
+                    }
+
+                    if (!logsState.items.length) {
+                        empty.style.display = 'block';
+                        page.querySelector('#loadMoreLogsBtn').style.display = 'none';
+                        return;
+                    }
+
+                    empty.style.display = 'none';
+                    var html = logsState.items.map(function (entry) {
+                        var meta = [
+                            entry.createdAt ? new Date(entry.createdAt).toLocaleString() : 'unknown time',
+                            entry.peerName ? ('peer ' + entry.peerName) : null,
+                            entry.authMode ? ('auth ' + entry.authMode) : null,
+                            entry.method && entry.path ? (entry.method + ' ' + entry.path) : entry.path,
+                            entry.statusCode ? ('HTTP ' + entry.statusCode) : null,
+                            entry.remoteIp ? ('ip ' + entry.remoteIp) : null
+                        ].filter(Boolean).join(' · ');
+                        var details = entry.detailsJson ? '<pre>' + escHtml(entry.detailsJson) + '</pre>' : '';
+                        return '<div class="jf-log-entry">' +
+                            '<div class="jf-log-entry-head">' +
+                                '<span class="jf-badge">' + escHtml(entry.category) + '</span>' +
+                                '<span class="jf-badge jf-sev-' + escHtml(entry.severity) + '">' + escHtml(entry.severity) + '</span>' +
+                                '<span class="jf-badge">' + escHtml(entry.eventType) + '</span>' +
+                            '</div>' +
+                            '<div>' + escHtml(entry.message) + '</div>' +
+                            '<div class="jf-log-entry-meta">' + escHtml(meta) + '</div>' +
+                            details +
+                        '</div>';
+                    }).join('');
+
+                    feed.innerHTML = html;
+                    page.querySelector('#loadMoreLogsBtn').style.display = logsState.hasMore ? 'inline-block' : 'none';
+                }
+
+                function loadLogsOverview(page) {
+                    return adminFetch('/JellyFed/logs/overview').then(function (r) {
+                        if (!r.ok) { return readErrorMessage(r).then(function (m) { throw new Error(m); }); }
+                        return r.json();
+                    }).then(function (raw) {
+                        var overview = normalizeLogOverview(raw);
+                        renderLogsOverview(page, overview);
+                        return overview;
+                    });
+                }
+
+                function loadLogsFeed(page, append) {
+                    var qs = new URLSearchParams();
+                    qs.set('scope', logsState.scope || 'all');
+                    if (logsState.peerId) { qs.set('peerId', logsState.peerId); }
+                    qs.set('limit', '100');
+                    if (append && logsState.beforeId) { qs.set('beforeId', String(logsState.beforeId)); }
+                    return adminFetch('/JellyFed/logs/feed?' + qs.toString()).then(function (r) {
+                        if (!r.ok) { return readErrorMessage(r).then(function (m) { throw new Error(m); }); }
+                        return r.json();
+                    }).then(function (raw) {
+                        var items = (pick(raw, 'items') || []).map(normalizeLogEntry);
+                        logsState.items = append ? logsState.items.concat(items) : items;
+                        logsState.hasMore = !!pick(raw, 'hasMore');
+                        logsState.beforeId = pick(raw, 'nextBeforeId') || null;
+                        renderLogsFeed(page, append);
+                        setLogsStatus(page, logsState.items.length + ' audit event(s)' + (logsState.hasMore ? ' loaded…' : ''), '#aaa');
+                    });
+                }
+
+                function refreshLogs(page) {
+                    logsState.scope = page.querySelector('#logsScopeSelect').value || 'all';
+                    logsState.peerId = page.querySelector('#logsPeerSelect').value || '';
+                    logsState.beforeId = null;
+                    logsState.hasMore = false;
+                    logsState.items = [];
+                    setLogsStatus(page, 'Loading audit feed…');
+                    return loadLogsOverview(page)
+                        .then(function () { return loadLogsFeed(page, false); })
+                        .catch(function (err) {
+                            console.error('[JellyFed] logs — error:', err);
+                            setLogsStatus(page, 'Error: ' + err.message, '#e07070');
+                        });
+                }
+
+                function loadMoreLogs(page) {
+                    if (!logsState.hasMore) { return; }
+                    setLogsStatus(page, 'Loading more audit events…');
+                    loadLogsFeed(page, true).catch(function (err) {
+                        console.error('[JellyFed] logs more — error:', err);
+                        setLogsStatus(page, 'Error: ' + err.message, '#e07070');
+                    });
+                }
+
                 // ── Settings load / save ──────────────────────────────────────
                 function loadSettings(page) {
                     ApiClient.getPluginConfiguration(pluginId).then(function (loaded) {
@@ -879,6 +1305,7 @@
                         page.querySelector('#jellyfinApiKey').value = loaded.JellyfinApiKey || loaded.jellyfinApiKey || '';
                         page.querySelector('#selfName').value = loaded.SelfName || loaded.selfName || '';
                         page.querySelector('#selfUrl').value = loaded.SelfUrl || loaded.selfUrl || '';
+                        page.querySelector('#discoverable').checked = pick(loaded, 'Discoverable') !== false;
                         // Once the token is known, peers tab (if active) can refresh.
                         if (page.querySelector('.jf-tab-panel[data-panel="peers"]').classList.contains('active')) {
                             loadPeerDetails(page);
@@ -896,7 +1323,8 @@
                         AnimeRootPath: page.querySelector('#animeRootPath').value,
                         JellyfinApiKey: page.querySelector('#jellyfinApiKey').value,
                         SelfName: page.querySelector('#selfName').value,
-                        SelfUrl: page.querySelector('#selfUrl').value
+                        SelfUrl: page.querySelector('#selfUrl').value,
+                        Discoverable: page.querySelector('#discoverable').checked
                     });
                 }
 
@@ -964,7 +1392,7 @@
                         var payload = collectSettingsPayload(page, fresh);
                         return ApiClient.updatePluginConfiguration(pluginId, payload).then(function () {
                             config = payload;
-                            return fetch(jellyFedUrl('/JellyFed/libraries/roots/ensure'), {
+                            return fetch(jellyFedUrl('/JellyFed/v1/libraries/roots/ensure'), {
                                 method: 'POST',
                                 headers: authHeaders(true),
                                 body: JSON.stringify({})
@@ -1061,7 +1489,7 @@
                     var btn = page.querySelector('#syncAllBtn');
                     btn.disabled = true;
                     btn.querySelector('span').textContent = 'Queuing…';
-                    fetch(jellyFedUrl('/JellyFed/peer/sync'), {
+                    fetch(jellyFedUrl('/JellyFed/v1/peer/sync'), {
                         method: 'POST',
                         headers: authHeaders(true),
                         body: JSON.stringify({ peerName: null })
@@ -1091,6 +1519,26 @@
                 });
 
                 page.querySelector('#saveBlockedBtn').addEventListener('click', function () { saveBlocked(page); });
+                page.querySelector('#refreshSourcesBtn').addEventListener('click', function () { loadMultiSourceItems(page); });
+                page.querySelector('#sourceSearchInput').addEventListener('keydown', function (e) {
+                    if (e.key === 'Enter') {
+                        e.preventDefault();
+                        loadMultiSourceItems(page);
+                    }
+                });
+
+                page.querySelector('#refreshLogsBtn').addEventListener('click', function () {
+                    refreshLogs(page);
+                });
+                page.querySelector('#logsScopeSelect').addEventListener('change', function () {
+                    refreshLogs(page);
+                });
+                page.querySelector('#logsPeerSelect').addEventListener('change', function () {
+                    refreshLogs(page);
+                });
+                page.querySelector('#loadMoreLogsBtn').addEventListener('click', function () {
+                    loadMoreLogs(page);
+                });
 
                 page.querySelector('#createLibrariesBtn').addEventListener('click', function () {
                     createQuickLibraries(page);
@@ -1129,7 +1577,7 @@
                     btn.disabled = true;
                     btn.querySelector('span').textContent = 'Resetting…';
 
-                    fetch(jellyFedUrl('/JellyFed/network/reset'), {
+                    fetch(jellyFedUrl('/JellyFed/v1/network/reset'), {
                         method: 'POST',
                         headers: authHeaders(true),
                         body: JSON.stringify({})

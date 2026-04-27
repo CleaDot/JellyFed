@@ -25,41 +25,54 @@ Instance A installe JellyFed. Elle se connecte à l'Instance B. Le plugin synchr
 ## Fonctionnalités
 
 ### Catalogue & streaming
-- Exposition du catalogue local via `GET /JellyFed/catalog` (films + séries + codec info)
-- Proxy stream `/JellyFed/stream/{id}?token=...` — aucune clé API dans les `.strm`
-- Proxy image `/JellyFed/image/{id}/{type}?token=...` — fallback si pas de `JellyfinApiKey`
+- Exposition du catalogue local via `GET /JellyFed/v1/catalog` (films + séries + codec info)
+- Proxy stream `/JellyFed/v1/stream/{id}?token=...` — aucune clé API dans les `.strm`
+- Proxy image `/JellyFed/v1/image/{id}/{type}?token=...` — fallback si pas de `JellyfinApiKey`
 - Infos codec + toutes les pistes audio/sous-titres exposées dans le catalogue
+- Sélecteur multi-source natif dans le player Jellyfin (films + épisodes de séries quand plusieurs peers exposent le même contenu)
 - Décision transcodage HLS correcte grâce aux infos `<fileinfo><streamdetails>` dans les NFO
 - Seeking fonctionnel (range requests sur le fichier source)
 
 ### Synchronisation
 - Tâche planifiée `IScheduledTask` (intervalle configurable, défaut 6h)
-- Manifest JSON — évite la re-création des `.strm` déjà présents
+- Manifest logique JSON + `sources[]` — évite la re-création des `.strm` déjà présents et prépare le multi-source
 - Mise à jour automatique des NFO existants à chaque sync (codec, pistes audio, sous-titres)
-- Pruning automatique des `.strm` dont les items ont disparu du peer
+- Sidecar `sources.json` écrit à côté de chaque item pour la provenance locale, avec `episodeSources[]` pour les séries
+- Provenance visible via tags / studio (`JellyFed:primary:*`, `JellyFed:source:*`, `JellyFed:{peer}`)
+- Pruning automatique des `.strm` dont les items ont disparu du peer, sans supprimer l'item si une autre source reste
 - Déduplication par TMDB ID (pas de doublon si contenu déjà présent localement)
 - Rescan Jellyfin déclenché après chaque sync
 
 ### Gestion des peers
+- Endpoint handshake `GET /JellyFed/v1/system/info` (version, protocolVersion, schemaVersion, instanceId, capabilities)
 - Onglet dédié « Peers » dans la page de configuration (Readme / Settings / Peers / Danger Zone)
+- Séparation claire entre **direct peers** (configurés, synchronisables) et **discovered peers** (suggestions uniquement)
 - Cartes par peer avec statut online/offline, version, dernière sync (badge ok/failed/never + erreur), durée
 - Compteurs synced par peer : catalogue distant (films / séries) vs local (films / séries / anime) + disque utilisé
 - Toggles par peer : Enabled, Films, Séries, Anime (PATCH live sans bouton Save)
 - Actions fine-grained : Resync ce peer, Purge .strm, Edit (nom / URL / token, avec renommage des dossiers), Remove (purge + révocation token + blacklist)
-- Ajout de peer via modal avec health-check préalable
-- Auto-registration bidirectionnelle + heartbeat toutes les 5 minutes
-- Blacklist automatique des peers supprimés (dépose les URLs dans Blocked Peers)
+- Ajout de peer via modal avec health-check préalable, y compris pré-remplissage depuis une suggestion découverte
+- Discovery v1 limitée à **deux sauts conceptuels** : un peer direct peut suggérer ses peers directs discoverable, sans mesh récursif
+- Mode **manual add only** : aucune suggestion ne déclenche une sync tant qu'un admin n'a pas ajouté le peer explicitement
+- Toggle **Discoverable / Invisible** pour contrôler si cette instance peut apparaître dans les suggestions second-hop
+- Heartbeat toutes les 5 minutes + refresh admin pour maintenir l'état de discovery à jour
+- Blacklist automatique des peers supprimés (masque l'URL dans les suggestions tant qu'elle n'est pas débloquée)
 
 ### Sécurité
 - Token de fédération auto-généré au démarrage (non éditable)
+- `InstanceId` stable auto-généré côté config pour les handshakes / diagnostics inter-peers
+- Store d'audit persistant SQLite (`.jellyfed-audit.sqlite3`) pour sécurité, accès peer et événements de connexion
+- Endpoints admin-only sous `/JellyFed/logs/*` + onglet **Logs** (all / security / peer connections / peer access history)
+- Attribution des accès par `PeerId` stable quand un peer utilise son `AccessToken` dédié (fallback global token conservé pour le bootstrap)
 - Clé API Jellyfin optionnelle (`JellyfinApiKey`) — reste côté serveur, jamais dans les `.strm`
 - Bouton "Reset Network" : nouveau token + suppression de tous les peers et `.strm`
 - `X-Forwarded-Proto` respecté derrière un reverse proxy
 
 ### UI admin
-- Page avec 4 onglets : **Readme** (intro + setup, ouvert par défaut), **Settings** (globaux), **Peers** (liste + actions), **Danger Zone** (reset network)
+- Page avec 5 onglets : **Readme** (intro + setup, ouvert par défaut), **Settings** (globaux), **Peers** (liste + actions), **Logs** (audit), **Danger Zone** (reset network)
 - Token de fédération en lecture seule avec bouton Copy
 - Blocked Peers déplacés dans l'onglet Peers (unblock + save)
+- Onglet Logs : vue admin des événements persistés, filtres par scope et peer, pagination
 - Reset Network isolé dans son propre onglet pour éviter les clics accidentels
 
 ---
@@ -93,13 +106,15 @@ Puis installez JellyFed depuis le catalogue.
 
 ```
 Federation Token : <auto-généré>
+Instance ID      : <auto-généré, stable>
 Instance Name    : mon-serveur
 Self URL         : https://mon-jellyfin.example.com
+Discoverable     : true
 Sync Interval    : 6 (heures)
 Library Path     : <auto-défini>
 ```
 
-Ajouter un peer (URL + token du peer distant) et cliquer Save.
+Ajouter un peer direct (URL + token du peer distant) depuis l'onglet **Peers**. Les peers découverts restent des suggestions jusqu'à ajout manuel.
 
 ### Bibliothèques Jellyfin
 

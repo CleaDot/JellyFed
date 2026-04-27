@@ -8,7 +8,7 @@
 | 1 — API catalogue | ✅ | 0.1.0.2 |
 | 2 — Sync + .strm | ✅ | 0.1.0.3 |
 | 3 — Gestion peers (base) | ✅ | 0.1.0.4 |
-| 3b — Auto-registration bidirectionnelle | ✅ | 0.1.0.6 |
+| 3b — Échange optionnel de token per-peer (`/peer/register`) | ✅ | 0.1.0.6 |
 | 3c — Blacklist peers | ✅ | 0.1.0.7 |
 | 3d — UI : Blocked Peers, Sync Now, Catalogue stats | ✅ | 0.1.0.8 |
 | 3e — Tokens d'accès par peer (révocation) | ✅ | 0.1.0.9 |
@@ -19,15 +19,18 @@
 | 4c — HTTPS X-Forwarded-Proto + images natives | ✅ | 0.1.0.13 |
 | 4d — Codec info NFO + seeking + pistes audio/sous-titres | ✅ | 0.1.0.14 |
 | 4e — UI peers avancée + layout par peer + anime roots | ✅ | 0.1.0.15 |
-| 5a — Versioning config + manifest | 🔜 | 0.1.0.16 |
-| 5b — Versioning API `/JellyFed/v1/` | 🔜 | 0.1.0.17 |
-| 5c — Migration legacy layout + gel du contrat disque | 🔜 | 0.1.0.18 |
-| 5d — Multi-source (`sources.json` + `IMediaSourceProvider`) | 🔜 | 0.1.0.19 |
-| 5e — Tag `<studio>` peer dans NFO + fix SRT soft-sub | 🔜 | 0.1.0.20 |
-| 5f — Tests d'intégration + hardening | 🔜 | 0.1.0.21 |
+| 4f — Discovery/admin-control v1 (manual add only) | ✅ | 0.1.0.16 |
+| 4g — Audit logs persistants + endpoints admin-only + attribution peer access | ✅ | 0.1.0.16 |
+| 5a — Versioning config + manifest | ✅ | 0.1.0.16 |
+| 5b — Versioning API `/JellyFed/v1/` | ✅ | 0.1.0.16 |
+| 5c — Migration legacy layout + gel du contrat disque | ✅ | 0.1.0.16 |
+| 5d — Multi-source provenance + player source selection (`sources[]` + `sources.json` + `IMediaSourceProvider`) | ✅ | feature/v1-sources |
+| 5e — Tags de provenance NFO (`<studio>` / `<tag>`) | ✅ | feature/v1-sources |
+| 5f — Fix SRT/ASS soft-sub (BUG-05) | 🔴 | post-slice v1-sources |
+| 5g — Tests d'intégration + hardening | 🔜 | 0.1.0.17+ |
 | **v1.0.0 — Release stable (architecture figée)** | 🎯 | **1.0.0** |
 | 6 — UI settings refonte | Post-v1 | v1.1 |
-| 7 — Peer-of-peer discovery (FEAT-03) | Post-v1 | v1.2 |
+| 7 — Discovery étendue / gossip récursif (FEAT-03++) | Post-v1 | v1.2 |
 | 8 — Recall + suppression propagée (FEAT-04/05) | Post-v1 | v1.3 |
 | 9 — Distribution publique | Post-v1 | v1.x |
 
@@ -41,14 +44,14 @@ Le plan détaillé de la v1 (contrats à figer, motivations, critères de valida
 
 ```
 P1  Versioning config + manifest (v0.1.0.16)          — prérequis migrations
-P2  Versioning API /JellyFed/v1/ (v0.1.0.17)          — prérequis coexistence v1/v2
+P2  Versioning API /JellyFed/v1/ (v0.1.0.17)             — prérequis coexistence v1/v2
 P3  Migration legacy layout + gel du layout par peer  — sécuriser l'upgrade depuis l'ancien layout plat
-P4  Multi-source sources.json (v0.1.0.19)             — nouveau fichier par item
-P5  Tag <studio> peer + fix SRT BUG-05 (v0.1.0.20)    — format NFO final
-P6  Tests d'intégration + hardening (v0.1.0.21)       — validation migrations
+P4  Multi-source + player source selection             — manifest logique, sources.json, IMediaSourceProvider
+P5  Fix SRT BUG-05                                     — dernière grosse dette fonctionnelle lecture
+P6  Tests d'intégration + hardening                    — validation migrations
 ```
 
-Post-v1 (non-breaking, safe à ajouter en v1.x) : UI refonte, peer-of-peer discovery, recall, suppression propagée, distribution publique.
+Post-v1 (non-breaking, safe à ajouter en v1.x) : UI refonte, discovery plus riche au-delà de 2 sauts, recall, suppression propagée, distribution publique.
 
 ---
 
@@ -125,21 +128,22 @@ Post-v1 (non-breaking, safe à ajouter en v1.x) : UI refonte, peer-of-peer disco
 
 #### TEST-02 — Accès au catalogue révoqué après suppression peer
 **À vérifier :**
-- Après que A supprime B, appeler `GET /JellyFed/catalog` sur A avec l'ancien token de B
+- Après que A supprime B, appeler `GET /JellyFed/v1/catalog` sur A avec l'ancien token de B
 - **Critère de succès :** `401 Unauthorized`
 
-#### TEST-03 — Auto-registration bidirectionnelle
+#### TEST-03 — Discovery admin contrôlée (manual add only)
 **À vérifier :**
 - A configure B manuellement
-- A effectue une sync
-- B voit A apparaître automatiquement dans sa liste de peers
-- B est activé et synchronise les films de A au prochain cycle
-- **Critère de succès :** A visible dans les peers de B, sync de B vers A fonctionnelle
+- A ouvre l'onglet Peers ou attend le refresh de discovery
+- A voit apparaître les peers directs discoverable de B dans la section "Discovered peers"
+- Cliquer "Add manually" pré-remplit le formulaire, puis l'ajout crée un vrai direct peer
+- Aucun peer n'est créé automatiquement côté B ou côté A sans validation admin
+- **Critère de succès :** suggestion visible, ajout manuel fonctionne, aucune auto-sync sans approbation
 
 ### Images & URLs
 
 #### TEST-17 — Images via proxy JellyFed (sans JellyfinApiKey)
-**Contexte :** `JellyfinApiKey` non configurée → URLs `/JellyFed/image/{id}/{type}?token=...`
+**Contexte :** `JellyfinApiKey` non configurée → URLs `/JellyFed/v1/image/{id}/{type}?token=...`
 **À vérifier :**
 - Les posters s'affichent dans Jellyfin (en local depuis le disque — téléchargés à la sync)
 - Les backdrops s'affichent
@@ -156,7 +160,7 @@ Post-v1 (non-breaking, safe à ajouter en v1.x) : UI refonte, peer-of-peer disco
 **Contexte :** Jellyfin derrière un reverse proxy nginx avec TLS.
 **À vérifier :**
 - Les URLs générées dans le catalogue utilisent `https://` (pas `http://`)
-- Vérifier dans `GET /JellyFed/catalog` que `streamUrl`, `posterUrl`, `backdropUrl` commencent par `https://`
+- Vérifier dans `GET /JellyFed/v1/catalog` que `streamUrl`, `posterUrl`, `backdropUrl` commencent par `https://`
 - **Critère de succès :** toutes les URLs en `https://`
 
 ---
@@ -211,23 +215,41 @@ Post-v1 (non-breaking, safe à ajouter en v1.x) : UI refonte, peer-of-peer disco
 ---
 
 ### FEAT-03 — Peer-of-peer discovery / gossip (P4)
-**Contexte :** Si A est peer avec B et C, B et C ne se connaissent pas.
-**Comportement :**
-- Option `SharePeers` dans la config (désactivé par défaut)
-- Lors de la sync, A envoie à B la liste de ses autres peers (C)
-- B les ajoute en "pending" — l'admin approuve ou auto-approve si configuré
-- Propagation limitée à 1 hop
+**Statut :** tranche v1 de base implémentée.
 
-**Endpoints :** `GET /JellyFed/peers` → déjà disponible. `POST /JellyFed/peer/register` → déjà disponible.
+**Disponible maintenant :**
+- `GET /JellyFed/v1/discovery` (alias legacy `GET /JellyFed/discovery`) pour partager l'instance courante + ses peers directs discoverable
+- `DiscoveredPeers` côté config/UI pour afficher des suggestions séparées des peers directs
+- `Discoverable` pour rendre une instance visible ou invisible aux peers de peers
+- ajout **manuel uniquement** depuis une suggestion
+- profondeur limitée à **deux sauts conceptuels** ; aucun mesh récursif
+
+**Restant post-v1 :**
+- relai multi-source / multi-chemins
+- agrégation de plusieurs sources pour une même suggestion
+- heuristiques de confiance / auto-approve éventuelles
+- propagation au-delà de deux sauts si elle reste sûre et contrôlable
 
 ---
 
 ### FEAT-08 — Multi-source / IMediaSourceProvider (P5)
 **Contexte :** Même film disponible chez plusieurs peers → proposer plusieurs sources au client.
-- `sources.json` par item (stocké à côté du `.strm`)
-- `FederationMediaSourceProvider.cs` implémente `IMediaSourceProvider`
-- Tri des sources : qualité décroissante, peer le plus rapide en premier
-- Le client Jellyfin voit toutes les sources et peut choisir
+
+**Statut :** ✅ slice player intégrée sur `feature/v1-sources`.
+
+**Disponible maintenant :**
+- manifest logique par TMDB ID + `sources[]` par item ;
+- `sources.json` écrit à côté de chaque item ;
+- `episodeSources[]` stocké pour les séries ;
+- promotion d'une source primaire alternative si un peer disparaît ;
+- balises NFO visibles (`studio` / `tag`) pour provenance et filtrage.
+- `FederationMediaSourceProvider.cs` implémente `IMediaSourceProvider` ;
+- plusieurs `MediaSourceInfo` exposés au player Jellyfin ;
+- mapping épisode/saison complet pour les séries via le sidecar de série.
+
+**Restant avant une v1 vraiment confortable :**
+- valider en conditions réelles les flows client Jellyfin / Infuse / web sur films + épisodes ;
+- résoudre BUG-05 pour que les soft-subs texte restent utilisables avec ces sources distantes.
 
 ---
 
@@ -240,14 +262,14 @@ Post-v1 (non-breaking, safe à ajouter en v1.x) : UI refonte, peer-of-peer disco
 
 ### FEAT-05 — Suppression propagée
 **Contexte :** Si A supprime B, les `.strm` de B restent chez les peers de A.
-- Signal `POST /JellyFed/peer/leave` envoyé à B quand A supprime B
+- Signal `POST /JellyFed/v1/peer/leave` envoyé à B quand A supprime B
 - B supprime les `.strm` de A de sa bibliothèque
 
 ---
 
 ### FEAT-06 — Tag peer dans les items Jellyfin (partiellement implémenté)
-**Statut :** ✅ `GET /JellyFed/manifest/stats` + `POST /JellyFed/peer/purge` + section "Synced Catalogue" dans l'UI.
-**Restant :** Tag `<studio>JellyFed:peer-b</studio>` dans le `.nfo` pour filtrage natif Jellyfin (optionnel).
+**Statut :** ✅ `GET /JellyFed/v1/manifest/stats` + `POST /JellyFed/v1/peer/purge` + section "Synced Catalogue" dans l'UI.
+**Restant :** compléter le fix SRT/ASS soft-sub et, si nécessaire, enrichir encore les NFO / `MediaSourceInfo` pour le futur provider.
 
 ---
 

@@ -6,6 +6,11 @@ namespace Jellyfin.Plugin.JellyFed.Configuration;
 public class PeerConfiguration
 {
     /// <summary>
+    /// Gets or sets the stable JellyFed peer identifier.
+    /// </summary>
+    public string PeerId { get; set; } = string.Empty;
+
+    /// <summary>
     /// Gets or sets the display name for this peer.
     /// </summary>
     public string Name { get; set; } = string.Empty;
@@ -19,6 +24,13 @@ public class PeerConfiguration
     /// Gets or sets the federation API token for this peer.
     /// </summary>
     public string FederationToken { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Gets or sets the shareable federation token originally provided by this peer.
+    /// This stays stable for discovery suggestions even if <see cref="FederationToken"/>
+    /// is later replaced by a revocable per-peer access token.
+    /// </summary>
+    public string DiscoveryToken { get; set; } = string.Empty;
 
     /// <summary>
     /// Gets or sets a value indicating whether sync is enabled for this peer.
@@ -44,7 +56,7 @@ public class PeerConfiguration
     /// <summary>
     /// Gets or sets the access token issued by this instance to this peer.
     /// The peer must present this token (not the global FederationToken) when
-    /// querying our catalog. Null until the peer has completed auto-registration.
+    /// querying our catalog. Null until an explicit token exchange has happened.
     /// Removing the peer revokes this token immediately.
     /// </summary>
     public string? AccessToken { get; set; }

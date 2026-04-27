@@ -17,14 +17,17 @@ Cette contrainte détermine quelles features **doivent** être implémentées av
 
 Tout ce qui suit constitue l'interface stable du plugin. Une fois v1 publiée, chaque modification de ces contrats est soit bannie, soit obligatoirement versionnée avec migration.
 
+Le slice logs/audit v1 ajoute aussi un contrat d'observabilité : store SQLite local (`.jellyfed-audit.sqlite3`), endpoints admin-only `/JellyFed/logs/*`, et attribution des accès peer par `PeerId` stable quand l'`AccessToken` per-peer est disponible.
+
 | Contrat | Support | Impact d'un changement post-v1 |
 |---|---|---|
 | Layout bibliothèque | `{MoviesRoot|SeriesRoot|AnimeRoot}/{PeerName}/...` sur disque | Migration disque + rescan Jellyfin |
 | Format `.strm` | Fichier texte, URL + token | Resync complet de tous les peers |
 | Format `.nfo` | XML, `<fileinfo><streamdetails>` | Rescan Jellyfin (perte métadonnées en attendant) |
 | Schema `.jellyfed-manifest.json` | JSON local au plugin | Perte de l'historique, pruning cassé |
+| Schema `.jellyfed-audit.sqlite3` | SQLite locale au plugin | Perte d'observabilité, migration audit requise |
 | Schema `PluginConfiguration` | XML interne Jellyfin | Reconfiguration manuelle des peers |
-| Routes API `/JellyFed/...` | HTTP inter-peers | Peers anciennes versions déconnectés |
+| Routes API `/JellyFed/v1/...` | HTTP inter-peers | Peers anciennes versions déconnectés |
 | DTOs catalogue (`CatalogItemDto`, `EpisodeDto`, `MediaStreamInfoDto`) | JSON wire format | Sync cross-version rompue |
 
 ---
@@ -39,6 +42,8 @@ Ajouter un champ `"schemaVersion": 1` dans :
 - `.jellyfed-manifest.json`
 - `PluginConfiguration` (sérialisé par Jellyfin)
 
+Ajouter aussi un `InstanceId` stable dans `PluginConfiguration`, généré une fois puis réutilisé pour les handshakes / diagnostics inter-peers.
+
 Mettre en place un `SchemaMigrator` capable de lire des schemas antérieurs et de les réécrire vers la version courante au démarrage du plugin. Sans ce mécanisme, toute évolution ultérieure du schéma (ex : nouveau champ dans `ManifestEntry`, nouveau champ de config peer) forcerait soit un reset, soit du code de migration ad hoc fragile.
 
 **Contrat posé :** chaque document stocké par le plugin porte un numéro de version. Toute version du plugin sait lire les versions antérieures (ou refuse de démarrer avec un message clair si la version est trop récente).
@@ -51,13 +56,13 @@ Préfixer toutes les routes du `FederationController` par `/JellyFed/v1/` :
 - `/JellyFed/v1/image/{id}/{type}`
 - `/JellyFed/v1/series/{id}/seasons`
 - `/JellyFed/v1/peer/register`
-- `/JellyFed/v1/peer/heartbeat`
+- `/JellyFed/v1/system/info`
 - `/JellyFed/v1/manifest/stats`
 - etc.
 
-Les routes `/JellyFed/...` (sans préfixe) restent alias vers `/JellyFed/v1/...` pendant la transition pour ne pas casser les peers déjà déployés.
+Les routes `/JellyFed/...` (sans préfixe de version) restent alias vers `/JellyFed/v1/...` pendant la transition pour ne pas casser les peers déjà déployés.
 
-Le `PeerClient` négocie la version lors du premier contact (champ `ProtocolVersion` déjà exposé dans le catalogue). Permet d'introduire plus tard un `/JellyFed/v2/` avec breaking changes, sans casser les peers v1.
+Le `PeerClient` négocie la version lors du premier contact via `GET /JellyFed/v1/system/info` (avec fallback legacy). Permet d'introduire plus tard un `/JellyFed/v2/` avec breaking changes, sans casser les peers v1.
 
 **Contrat posé :** les chemins HTTP `/JellyFed/v1/*` sont stables pour la durée de vie de v1.x. Les breaking changes vont dans `/v2/`.
 
@@ -93,6 +98,16 @@ Pourquoi avant v1 : l'ajout de `sources.json` modifie la structure du layout (no
 
 **Contrat posé :** `sources.json` est la source de vérité pour les sources alternatives. Absence = une seule source (le peer qui a produit le `.strm`).
 
+**État actuel :**
+- le manifest est basculé vers l'item logique + `sources[]` ;
+- `sources.json` est généré à côté des items ;
+- pour les séries, `episodeSources[]` conserve les variantes par épisode ;
+- JellyFed sait promouvoir une autre source primaire quand un peer disparaît ;
+- `FederationMediaSourceProvider` est branché et expose les sources alternatives au player pour les films et les épisodes ;
+- le fallback visible reste présent via `<studio>` / `<tag>` dans les NFO.
+
+**Ce qui reste autour de cette feature :** validation multi-clients + résolution de BUG-05 (soft-sub texte) pour que l'expérience playback soit pleinement v1-ready.
+
 ### 5. Tag peer dans NFO (v0.1.0.19, combiné avec fix SRT)
 
 Ajouter `<studio>JellyFed:{PeerName}</studio>` dans chaque `.nfo` généré. Permet de filtrer nativement par peer dans l'interface Jellyfin (la propriété "Studios" est exposée dans les filtres standards).
@@ -100,6 +115,11 @@ Ajouter `<studio>JellyFed:{PeerName}</studio>` dans chaque `.nfo` généré. Per
 Pourquoi avant v1 : ajouter le tag après v1 = rewrite forcé de tous les NFO existants au premier sync post-upgrade. Faisable techniquement via `UpdateMovieNfoAsync` (déjà en place), mais impose un passage unique coûteux et une fenêtre où les anciens items n'ont pas encore le tag. Préférable de l'avoir dès la v1.
 
 **Contrat posé :** le format des `<studio>` dans les NFO générés inclut `JellyFed:{PeerName}`.
+
+Dans la slice provenance, ce contrat est élargi avec :
+- `<tag>JellyFed:primary:{PeerName}</tag>` ;
+- `<tag>JellyFed:source:{PeerName}</tag>` ;
+- `<tag>JellyFed:multi-source</tag>` quand applicable.
 
 ### 6. Fix SRT/ASS soft-sub (BUG-05, v0.1.0.19)
 
@@ -118,8 +138,8 @@ v0.1.0.15  Release de réconciliation temp -> main (UI peers + layout per-peer +
 v0.1.0.16  Versioning config + manifest (schemaVersion, SchemaMigrator)
 v0.1.0.17  Versioning API (/JellyFed/v1/ + alias transitoires)
 v0.1.0.18  Migration legacy layout -> layout per-peer figé
-v0.1.0.19  Multi-source (sources.json + IMediaSourceProvider)
-v0.1.0.20  Tag <studio>JellyFed:peer</studio> + fix SRT soft-sub
+v0.1.0.19  Multi-source player-integrated (sources.json + IMediaSourceProvider + episodeSources)
+v0.1.0.20  Fix SRT soft-sub
 v0.1.0.21  Tests d'intégration + hardening (migrations, edge cases)
 v1.0.0     Release stable — architecture figée
 ```
@@ -135,7 +155,7 @@ Ces features n'affectent aucun contrat public et peuvent être ajoutées en v1.x
 | Feature | Version cible | Nature |
 |---|---|---|
 | UI settings refonte | v1.1 | Interne plugin, zéro impact format |
-| FEAT-03 peer-of-peer discovery | v1.2 | Nouveau endpoint + champ config optionnel (`SharePeers`, défaut false) |
+| FEAT-03++ discovery étendue / gossip récursif | v1.2 | Extension additive au-dessus de la discovery v1 déjà présente |
 | FEAT-04 recall | v1.3 | Nouveau endpoint, opération manuelle |
 | FEAT-05 suppression propagée | v1.3 | Nouveau endpoint `/peer/leave`, handler côté cible |
 | TECH-01 rechargement config à chaud | v1.x | Interne |
@@ -151,6 +171,20 @@ Toute feature future qui voudrait modifier un contrat public suivra le pattern :
 ---
 
 ## Critères de validation v1.0.0
+
+### Checklist de sortie v1
+
+- [x] Versioning config + manifest (`schemaVersion`, `SchemaMigrator`)
+- [x] API versionnée `/JellyFed/v1/` + alias legacy transitoires
+- [x] Layout bibliothèque per-peer figé et documenté
+- [x] Discovery/admin-control v1 (manual add only)
+- [x] Audit logs persistants + endpoints admin-only
+- [x] Provenance multi-source (`sources[]`, `sources.json`, tags/studios NFO)
+- [x] Sélection de source intégrée au player (`IMediaSourceProvider`) pour films et épisodes
+- [ ] Fix BUG-05 — sous-titres SRT/ASS soft-sub lors du playback distant
+- [ ] Tests d'intégration + hardening des migrations / failovers / rescans
+- [ ] Validation multi-clients réelle (web, Android/iOS, Infuse, etc.)
+- [ ] Documentation finale / release notes figées pour la v1
 
 Avant de tagger la v1.0.0 :
 
