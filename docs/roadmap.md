@@ -24,9 +24,10 @@
 | 5a — Versioning config + manifest | ✅ | 0.1.0.16 |
 | 5b — Versioning API `/JellyFed/v1/` | ✅ | 0.1.0.16 |
 | 5c — Migration legacy layout + gel du contrat disque | ✅ | 0.1.0.16 |
-| 5d — Multi-source provenance (`sources[]` + `sources.json`) | 🟡 slice landed, provider pending | feature/v1-sources |
-| 5e — Tag `<studio>` peer dans NFO + fix SRT soft-sub | 🟡 partial | feature/v1-sources |
-| 5f — Tests d'intégration + hardening | 🔜 | 0.1.0.17 |
+| 5d — Multi-source provenance + player source selection (`sources[]` + `sources.json` + `IMediaSourceProvider`) | ✅ | feature/v1-sources |
+| 5e — Tags de provenance NFO (`<studio>` / `<tag>`) | ✅ | feature/v1-sources |
+| 5f — Fix SRT/ASS soft-sub (BUG-05) | 🔴 | post-slice v1-sources |
+| 5g — Tests d'intégration + hardening | 🔜 | 0.1.0.17+ |
 | **v1.0.0 — Release stable (architecture figée)** | 🎯 | **1.0.0** |
 | 6 — UI settings refonte | Post-v1 | v1.1 |
 | 7 — Discovery étendue / gossip récursif (FEAT-03++) | Post-v1 | v1.2 |
@@ -45,9 +46,9 @@ Le plan détaillé de la v1 (contrats à figer, motivations, critères de valida
 P1  Versioning config + manifest (v0.1.0.16)          — prérequis migrations
 P2  Versioning API /JellyFed/v1/ (v0.1.0.17)             — prérequis coexistence v1/v2
 P3  Migration legacy layout + gel du layout par peer  — sécuriser l'upgrade depuis l'ancien layout plat
-P4  Multi-source sources.json (v0.1.0.19)             — nouveau fichier par item
-P5  Tag <studio> peer + fix SRT BUG-05 (v0.1.0.20)    — format NFO final
-P6  Tests d'intégration + hardening (v0.1.0.21)       — validation migrations
+P4  Multi-source + player source selection             — manifest logique, sources.json, IMediaSourceProvider
+P5  Fix SRT BUG-05                                     — dernière grosse dette fonctionnelle lecture
+P6  Tests d'intégration + hardening                    — validation migrations
 ```
 
 Post-v1 (non-breaking, safe à ajouter en v1.x) : UI refonte, discovery plus riche au-delà de 2 sauts, recall, suppression propagée, distribution publique.
@@ -234,17 +235,21 @@ Post-v1 (non-breaking, safe à ajouter en v1.x) : UI refonte, discovery plus ric
 ### FEAT-08 — Multi-source / IMediaSourceProvider (P5)
 **Contexte :** Même film disponible chez plusieurs peers → proposer plusieurs sources au client.
 
-**Slice actuellement mergée sur `feature/v1-sources` :**
+**Statut :** ✅ slice player intégrée sur `feature/v1-sources`.
+
+**Disponible maintenant :**
 - manifest logique par TMDB ID + `sources[]` par item ;
 - `sources.json` écrit à côté de chaque item ;
+- `episodeSources[]` stocké pour les séries ;
 - promotion d'une source primaire alternative si un peer disparaît ;
 - balises NFO visibles (`studio` / `tag`) pour provenance et filtrage.
-
-**Reste à faire pour le vrai player-integrated source selection :**
 - `FederationMediaSourceProvider.cs` implémente `IMediaSourceProvider` ;
-- exposition de plusieurs `MediaSourceInfo` au player Jellyfin ;
-- mapping épisode/saison complet pour les séries ;
-- sélection de source côté player au lieu du simple contrôle de source primaire.
+- plusieurs `MediaSourceInfo` exposés au player Jellyfin ;
+- mapping épisode/saison complet pour les séries via le sidecar de série.
+
+**Restant avant une v1 vraiment confortable :**
+- valider en conditions réelles les flows client Jellyfin / Infuse / web sur films + épisodes ;
+- résoudre BUG-05 pour que les soft-subs texte restent utilisables avec ces sources distantes.
 
 ---
 

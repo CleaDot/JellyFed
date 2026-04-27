@@ -110,7 +110,7 @@ Depuis la slice v1 provenance/multi-source, JellyFed ajoute aussi :
 - `<tag>JellyFed:source:peer-b</tag>` pour toutes les sources ;
 - `<tag>JellyFed:multi-source</tag>` si plusieurs peers exposent le même TMDB ID.
 
-Ça sert de fallback visible tant que le player ne propose pas encore un vrai sélecteur multi-source natif.
+Ça reste un fallback visible, mais le player Jellyfin peut maintenant aussi proposer directement les sources alternatives via `IMediaSourceProvider`.
 
 **Épisode NFO (`S01E01 - Pilot.nfo`) :**
 ```xml
@@ -168,6 +168,12 @@ Depuis la slice v1 provenance/multi-source, JellyFed ajoute aussi :
    → peer-b sert le fichier brut avec range request support (seekable)
    → FFmpeg transcode en H264/AAC → HLS segments
 6. Browser joue les segments HLS depuis le serveur LOCAL
+
+Si plusieurs peers exposent le même item, `FederationMediaSourceProvider` renvoie plusieurs `MediaSourceInfo` à Jellyfin :
+- pour les **films**, le provider lit directement `sources.json` à côté du dossier du film ;
+- pour les **épisodes**, il remonte du fichier `SxxExx.strm` vers le dossier de série, lit `episodeSources[]`, puis filtre le groupe correspondant à la saison/épisode courant.
+
+Le `.strm` principal continue à pointer vers la source primaire pour les clients / chemins qui ignorent le provider.
 ```
 
 ---
@@ -235,6 +241,57 @@ Lors de chaque sync, JellyFed met à jour pour les items déjà en manifest :
       "audioCodec": "aac",
       "width": 1280,
       "height": 720
+    }
+  ]
+}
+```
+
+Pour une **série**, le même sidecar contient aussi un mapping par épisode :
+
+```json
+{
+  "schemaVersion": 1,
+  "itemKey": "tmdb:1396",
+  "itemType": "Series",
+  "primaryPeerName": "instance-b",
+  "primaryJellyfinId": "series001",
+  "path": "/data/jellyfin/data/jellyfed-library/Series/instance-b/Breaking Bad (2008)",
+  "syncedAt": "2026-04-27T16:00:00Z",
+  "sources": [
+    {
+      "peerName": "instance-b",
+      "jellyfinId": "series001"
+    },
+    {
+      "peerName": "instance-c",
+      "jellyfinId": "series999"
+    }
+  ],
+  "episodeSources": [
+    {
+      "seasonNumber": 1,
+      "episodeNumber": 1,
+      "title": "Pilot",
+      "sources": [
+        {
+          "peerName": "instance-b",
+          "jellyfinId": "ep001",
+          "streamUrl": "https://peer-b/JellyFed/v1/stream/ep001?token=...",
+          "videoCodec": "h264",
+          "audioCodec": "aac",
+          "width": 1280,
+          "height": 720
+        },
+        {
+          "peerName": "instance-c",
+          "jellyfinId": "epAAA",
+          "streamUrl": "https://peer-c/JellyFed/v1/stream/epAAA?token=...",
+          "videoCodec": "hevc",
+          "audioCodec": "eac3",
+          "width": 1920,
+          "height": 1080
+        }
+      ]
     }
   ]
 }

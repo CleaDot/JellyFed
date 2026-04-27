@@ -98,13 +98,15 @@ Pourquoi avant v1 : l'ajout de `sources.json` modifie la structure du layout (no
 
 **Contrat posé :** `sources.json` est la source de vérité pour les sources alternatives. Absence = une seule source (le peer qui a produit le `.strm`).
 
-**État de la slice `feature/v1-sources` :**
-- le manifest est déjà basculé vers l'item logique + `sources[]` ;
+**État actuel :**
+- le manifest est basculé vers l'item logique + `sources[]` ;
 - `sources.json` est généré à côté des items ;
+- pour les séries, `episodeSources[]` conserve les variantes par épisode ;
 - JellyFed sait promouvoir une autre source primaire quand un peer disparaît ;
-- le fallback visible passe par `<studio>` / `<tag>` dans les NFO.
+- `FederationMediaSourceProvider` est branché et expose les sources alternatives au player pour les films et les épisodes ;
+- le fallback visible reste présent via `<studio>` / `<tag>` dans les NFO.
 
-**Ce qui reste explicitement hors de cette slice :** le vrai branchement `IMediaSourceProvider` côté player. Le groundwork disque + provenance est prêt, mais Jellyfin continue pour l'instant à ne voir que la source primaire matérialisée.
+**Ce qui reste autour de cette feature :** validation multi-clients + résolution de BUG-05 (soft-sub texte) pour que l'expérience playback soit pleinement v1-ready.
 
 ### 5. Tag peer dans NFO (v0.1.0.19, combiné avec fix SRT)
 
@@ -136,8 +138,8 @@ v0.1.0.15  Release de réconciliation temp -> main (UI peers + layout per-peer +
 v0.1.0.16  Versioning config + manifest (schemaVersion, SchemaMigrator)
 v0.1.0.17  Versioning API (/JellyFed/v1/ + alias transitoires)
 v0.1.0.18  Migration legacy layout -> layout per-peer figé
-v0.1.0.19  Multi-source (sources.json + IMediaSourceProvider)
-v0.1.0.20  Tag <studio>JellyFed:peer</studio> + fix SRT soft-sub
+v0.1.0.19  Multi-source player-integrated (sources.json + IMediaSourceProvider + episodeSources)
+v0.1.0.20  Fix SRT soft-sub
 v0.1.0.21  Tests d'intégration + hardening (migrations, edge cases)
 v1.0.0     Release stable — architecture figée
 ```
@@ -169,6 +171,20 @@ Toute feature future qui voudrait modifier un contrat public suivra le pattern :
 ---
 
 ## Critères de validation v1.0.0
+
+### Checklist de sortie v1
+
+- [x] Versioning config + manifest (`schemaVersion`, `SchemaMigrator`)
+- [x] API versionnée `/JellyFed/v1/` + alias legacy transitoires
+- [x] Layout bibliothèque per-peer figé et documenté
+- [x] Discovery/admin-control v1 (manual add only)
+- [x] Audit logs persistants + endpoints admin-only
+- [x] Provenance multi-source (`sources[]`, `sources.json`, tags/studios NFO)
+- [x] Sélection de source intégrée au player (`IMediaSourceProvider`) pour films et épisodes
+- [ ] Fix BUG-05 — sous-titres SRT/ASS soft-sub lors du playback distant
+- [ ] Tests d'intégration + hardening des migrations / failovers / rescans
+- [ ] Validation multi-clients réelle (web, Android/iOS, Infuse, etc.)
+- [ ] Documentation finale / release notes figées pour la v1
 
 Avant de tagger la v1.0.0 :
 

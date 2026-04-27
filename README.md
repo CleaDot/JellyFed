@@ -29,6 +29,7 @@ Instance A installe JellyFed. Elle se connecte à l'Instance B. Le plugin synchr
 - Proxy stream `/JellyFed/v1/stream/{id}?token=...` — aucune clé API dans les `.strm`
 - Proxy image `/JellyFed/v1/image/{id}/{type}?token=...` — fallback si pas de `JellyfinApiKey`
 - Infos codec + toutes les pistes audio/sous-titres exposées dans le catalogue
+- Sélecteur multi-source natif dans le player Jellyfin (films + épisodes de séries quand plusieurs peers exposent le même contenu)
 - Décision transcodage HLS correcte grâce aux infos `<fileinfo><streamdetails>` dans les NFO
 - Seeking fonctionnel (range requests sur le fichier source)
 
@@ -36,7 +37,7 @@ Instance A installe JellyFed. Elle se connecte à l'Instance B. Le plugin synchr
 - Tâche planifiée `IScheduledTask` (intervalle configurable, défaut 6h)
 - Manifest logique JSON + `sources[]` — évite la re-création des `.strm` déjà présents et prépare le multi-source
 - Mise à jour automatique des NFO existants à chaque sync (codec, pistes audio, sous-titres)
-- Sidecar `sources.json` écrit à côté de chaque item pour la provenance locale
+- Sidecar `sources.json` écrit à côté de chaque item pour la provenance locale, avec `episodeSources[]` pour les séries
 - Provenance visible via tags / studio (`JellyFed:primary:*`, `JellyFed:source:*`, `JellyFed:{peer}`)
 - Pruning automatique des `.strm` dont les items ont disparu du peer, sans supprimer l'item si une autre source reste
 - Déduplication par TMDB ID (pas de doublon si contenu déjà présent localement)
@@ -150,4 +151,3 @@ La renseigner dans la config JellyFed. Permet :
 |---|---|---|
 | BUG-05 | Sous-titres SRT/ASS non affichés (soft-sub WebVTT) | 🔴 P1 |
 | BUG-06 | PGS brûlés en hard-sub (non désactivable) | 🟡 Limitation Jellyfin |
-| FEAT-08 | Sélecteur multi-source natif côté player (`IMediaSourceProvider`) pas encore branché : une seule source primaire exposée à la fois | 🟡 groundwork prêt |

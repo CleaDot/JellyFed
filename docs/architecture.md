@@ -304,21 +304,22 @@ Le store est exposé par des endpoints admin-only (`/JellyFed/logs/overview`, `/
 }
 ```
 
-`peerName` / `jellyfinId` restent le **primary source** courant (celui dont les `.strm` pointent réellement vers le peer). Les autres variantes sont stockées dans `sources[]` et dans le sidecar local `sources.json` pour la provenance, le failover et le futur sélecteur de source.
+`peerName` / `jellyfinId` restent le **primary source** courant (celui dont les `.strm` pointent réellement vers le peer). Les autres variantes sont stockées dans `sources[]` et dans le sidecar local `sources.json` pour la provenance, le failover et le sélecteur de source côté player.
 
 ### Slice v1 provenance / multi-source
 
 - un seul item logique par TMDB ID dans le manifest ;
 - `sources[]` garde les peers alternatifs ;
 - `sources.json` est écrit à côté de chaque item materialized ;
+- pour les séries, `episodeSources[]` garde les variantes par épisode (season/episode + sources correspondantes) ;
 - les NFO portent des marqueurs visibles :
   - `<studio>JellyFed:{PeerName}</studio>` pour chaque source ;
   - `<tag>JellyFed:primary:{PeerName}</tag>` ;
   - `<tag>JellyFed:source:{PeerName}</tag>` ;
   - `<tag>JellyFed:multi-source</tag>` si plusieurs peers exposent le même item ;
 - si le peer primaire disparaît mais qu'une autre source reste, JellyFed promeut une source alternative et réécrit le `.strm` (films) ou la matérialisation épisode best-effort (séries) au lieu de supprimer l'item logique.
-
-⚠️ `IMediaSourceProvider` n'est pas encore câblé dans cette slice. Le groundwork disque + manifest est prêt, mais le player Jellyfin ne voit encore qu'une source active à la fois (la primaire).
+- `FederationMediaSourceProvider : IMediaSourceProvider` lit ce sidecar et expose plusieurs `MediaSourceInfo` au player Jellyfin ;
+- pour un épisode, le provider remonte du `.strm` vers le dossier de série, lit `episodeSources[]`, puis ne renvoie que les variantes correspondant au couple saison/épisode demandé.
 
 ---
 
