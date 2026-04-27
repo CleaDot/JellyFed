@@ -368,22 +368,25 @@ public class FederationSyncTask : IScheduledTask
                     seenSeriesSources.Add(SourceKey(key, peer.Name));
                     var now = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
 
+                    var seasons = await _peerClient.GetSeasonsAsync(peer, item.JellyfinId, cancellationToken)
+                        .ConfigureAwait(false);
+                    if (seasons is null)
+                    {
+                        _logger.LogWarning("JellyFed sync: failed to fetch seasons for {Title}, skipping.", item.Title);
+                        continue;
+                    }
+
+                    var episodeSources = BuildEpisodeSources(seasons, peer.Name);
+
                     if (!manifest.Series.TryGetValue(key, out var entry))
                     {
-                        var seasons = await _peerClient.GetSeasonsAsync(peer, item.JellyfinId, cancellationToken)
-                            .ConfigureAwait(false);
-                        if (seasons is null)
-                        {
-                            _logger.LogWarning("JellyFed sync: failed to fetch seasons for {Title}, skipping.", item.Title);
-                            continue;
-                        }
-
                         entry = new ManifestEntry
                         {
                             PeerName = peer.Name,
                             JellyfinId = item.JellyfinId,
                             SyncedAt = now,
-                            Sources = [source]
+                            Sources = [source],
+                            EpisodeSources = episodeSources
                         };
 
                         var seriesContentRoot = Path.Combine(seriesTypeRoot, peerSeg);
@@ -397,25 +400,15 @@ public class FederationSyncTask : IScheduledTask
                     }
 
                     UpsertSource(entry, source);
+                    UpsertEpisodeSources(entry, episodeSources, peer.Name);
                     EnsurePrimarySource(entry, keepCurrentIfAvailable: true);
                     entry.SyncedAt = now;
 
                     if (string.Equals(entry.PeerName, peer.Name, StringComparison.OrdinalIgnoreCase) &&
                         string.Equals(entry.JellyfinId, item.JellyfinId, StringComparison.Ordinal))
                     {
-                        var seasons = await _peerClient.GetSeasonsAsync(peer, item.JellyfinId, cancellationToken)
+                        await _strmWriter.RewriteSeriesPrimaryAsync(entry.Path, item, seasons, peer, entry, key, cancellationToken)
                             .ConfigureAwait(false);
-                        if (seasons is not null)
-                        {
-                            await _strmWriter.RewriteSeriesPrimaryAsync(entry.Path, item, seasons, peer, entry, key, cancellationToken)
-                                .ConfigureAwait(false);
-                        }
-                        else
-                        {
-                            _logger.LogWarning("JellyFed sync: failed to refresh seasons for {Title}, keeping previous materialization.", item.Title);
-                            await _strmWriter.RefreshSeriesProvenanceAsync(entry.Path, entry, key, cancellationToken)
-                                .ConfigureAwait(false);
-                        }
                     }
                     else
                     {
@@ -540,6 +533,7 @@ public class FederationSyncTask : IScheduledTask
             }
 
             entry.Sources = sources;
+            RemoveEpisodeSourcesForPeer(entry, peersEligibleForPrune, seenSourceKeys, key);
 
             if (entry.Sources.Count == 0)
             {
@@ -602,6 +596,14 @@ public class FederationSyncTask : IScheduledTask
                     .ConfigureAwait(false);
                 return;
             }
+        }
+
+        var reconstructedSeasons = TryBuildSeasonsFromStoredSources(entry);
+        if (reconstructedSeasons is not null)
+        {
+            await _strmWriter.RewriteSeriesEpisodeStreamsAsync(entry.Path, reconstructedSeasons, entry, itemKey, cancellationToken)
+                .ConfigureAwait(false);
+            return;
         }
 
         await _strmWriter.RefreshSeriesProvenanceAsync(entry.Path, entry, itemKey, cancellationToken)
@@ -687,6 +689,196 @@ public class FederationSyncTask : IScheduledTask
         existing.MediaStreams = source.MediaStreams;
         entry.Sources = sources;
     }
+
+    private static List<SeriesEpisodeSourceGroup> BuildEpisodeSources(SeasonsResponseDto seasons, string peerName)
+        => seasons.Seasons
+            .SelectMany(season => season.Episodes.Select(episode => new SeriesEpisodeSourceGroup
+            {
+                SeasonNumber = season.SeasonNumber ?? 0,
+                EpisodeNumber = episode.EpisodeNumber ?? 0,
+                Title = episode.Title,
+                Sources =
+                [
+                    new ManifestSource
+                    {
+                        PeerName = peerName,
+                        JellyfinId = episode.JellyfinId,
+                        StreamUrl = episode.StreamUrl,
+                        Container = episode.Container,
+                        VideoCodec = episode.VideoCodec,
+                        AudioCodec = episode.AudioCodec,
+                        Width = episode.Width,
+                        Height = episode.Height,
+                        MediaStreams = episode.MediaStreams
+                    }
+                ]
+            }))
+            .OrderBy(group => group.SeasonNumber)
+            .ThenBy(group => group.EpisodeNumber)
+            .ToList();
+
+    private static void UpsertEpisodeSources(ManifestEntry entry, IReadOnlyList<SeriesEpisodeSourceGroup> incomingGroups, string peerName)
+    {
+        var groups = entry.EpisodeSources
+            .ToDictionary(group => EpisodeKey(group.SeasonNumber, group.EpisodeNumber));
+        var incomingKeys = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var incomingGroup in incomingGroups)
+        {
+            var key = EpisodeKey(incomingGroup.SeasonNumber, incomingGroup.EpisodeNumber);
+            incomingKeys.Add(key);
+
+            if (!groups.TryGetValue(key, out var existingGroup))
+            {
+                groups[key] = new SeriesEpisodeSourceGroup
+                {
+                    SeasonNumber = incomingGroup.SeasonNumber,
+                    EpisodeNumber = incomingGroup.EpisodeNumber,
+                    Title = incomingGroup.Title,
+                    Sources = incomingGroup.Sources.ToList()
+                };
+                continue;
+            }
+
+            var sources = existingGroup.Sources.ToList();
+            sources.RemoveAll(source => string.Equals(source.PeerName, peerName, StringComparison.OrdinalIgnoreCase));
+            sources.AddRange(incomingGroup.Sources);
+
+            existingGroup.Title = incomingGroup.Title;
+            existingGroup.Sources = sources
+                .OrderByDescending(SourcePixelCount)
+                .ThenBy(source => source.PeerName, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        foreach (var existingKey in groups.Keys.ToList())
+        {
+            if (incomingKeys.Contains(existingKey))
+            {
+                continue;
+            }
+
+            var group = groups[existingKey];
+            var sources = group.Sources
+                .Where(source => !string.Equals(source.PeerName, peerName, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            if (sources.Count == 0)
+            {
+                groups.Remove(existingKey);
+                continue;
+            }
+
+            group.Sources = sources;
+        }
+
+        entry.EpisodeSources = groups.Values
+            .OrderBy(group => group.SeasonNumber)
+            .ThenBy(group => group.EpisodeNumber)
+            .ToList();
+    }
+
+    private static void RemoveEpisodeSourcesForPeer(
+        ManifestEntry entry,
+        HashSet<string> peersEligibleForPrune,
+        HashSet<string> seenSourceKeys,
+        string itemKey)
+    {
+        var groups = entry.EpisodeSources.ToList();
+        foreach (var group in groups.ToList())
+        {
+            var sources = group.Sources.ToList();
+            foreach (var source in sources.ToList())
+            {
+                if (!peersEligibleForPrune.Contains(source.PeerName))
+                {
+                    continue;
+                }
+
+                if (seenSourceKeys.Contains(SourceKey(itemKey, source.PeerName)))
+                {
+                    continue;
+                }
+
+                sources.Remove(source);
+            }
+
+            if (sources.Count == 0)
+            {
+                groups.Remove(group);
+                continue;
+            }
+
+            group.Sources = sources;
+        }
+
+        entry.EpisodeSources = groups;
+    }
+
+    private static SeasonsResponseDto? TryBuildSeasonsFromStoredSources(ManifestEntry entry)
+    {
+        if (entry.EpisodeSources.Count == 0)
+        {
+            return null;
+        }
+
+        var primaryGroups = entry.EpisodeSources
+            .Select(group => new
+            {
+                Group = group,
+                Source = group.Sources.FirstOrDefault(source =>
+                    string.Equals(source.PeerName, entry.PeerName, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(source.JellyfinId, entry.JellyfinId, StringComparison.Ordinal))
+                    ?? group.Sources.FirstOrDefault(source =>
+                        string.Equals(source.PeerName, entry.PeerName, StringComparison.OrdinalIgnoreCase))
+                    ?? (group.Sources.Count > 0 ? group.Sources[0] : null)
+            })
+            .Where(x => x.Source is not null)
+            .ToList();
+
+        if (primaryGroups.Count == 0)
+        {
+            return null;
+        }
+
+        var seasons = new SeasonsResponseDto
+        {
+            SeriesId = entry.JellyfinId
+        };
+
+        foreach (var seasonGroup in primaryGroups.GroupBy(x => x.Group.SeasonNumber).OrderBy(group => group.Key))
+        {
+            var season = new SeasonDto
+            {
+                SeasonNumber = seasonGroup.Key,
+                Title = $"Season {seasonGroup.Key:D2}"
+            };
+
+            foreach (var episode in seasonGroup.OrderBy(x => x.Group.EpisodeNumber))
+            {
+                season.Episodes.Add(new EpisodeDto
+                {
+                    JellyfinId = episode.Source!.JellyfinId,
+                    EpisodeNumber = episode.Group.EpisodeNumber,
+                    Title = episode.Group.Title,
+                    StreamUrl = episode.Source.StreamUrl,
+                    Container = episode.Source.Container,
+                    VideoCodec = episode.Source.VideoCodec,
+                    AudioCodec = episode.Source.AudioCodec,
+                    Width = episode.Source.Width,
+                    Height = episode.Source.Height,
+                    MediaStreams = episode.Source.MediaStreams
+                });
+            }
+
+            seasons.Seasons.Add(season);
+        }
+
+        return seasons;
+    }
+
+    private static string EpisodeKey(int seasonNumber, int episodeNumber)
+        => FormattableString.Invariant($"{seasonNumber:D4}:{episodeNumber:D4}");
 
     private static void EnsurePrimarySource(ManifestEntry entry, bool keepCurrentIfAvailable)
     {

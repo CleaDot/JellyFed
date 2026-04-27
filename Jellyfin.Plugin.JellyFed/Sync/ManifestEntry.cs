@@ -28,6 +28,9 @@ public class ManifestEntry
     /// <summary>Gets or sets all currently known upstream sources for this logical item.</summary>
     public IReadOnlyList<ManifestSource> Sources { get; set; } = [];
 
+    /// <summary>Gets or sets all currently known per-episode upstream sources for a series item.</summary>
+    public IReadOnlyList<SeriesEpisodeSourceGroup> EpisodeSources { get; set; } = [];
+
     /// <summary>
     /// Gets the current primary source entry, or null if the manifest has not been normalized yet.
     /// </summary>

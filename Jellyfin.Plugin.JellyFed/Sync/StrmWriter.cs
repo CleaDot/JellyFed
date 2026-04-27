@@ -403,6 +403,21 @@ public class StrmWriter
                 .OrderByDescending(source => string.Equals(source.PeerName, entry.PeerName, StringComparison.OrdinalIgnoreCase))
                 .ThenByDescending(SourcePixelCount)
                 .ThenBy(source => source.PeerName, StringComparer.OrdinalIgnoreCase)
+                .ToList(),
+            EpisodeSources = entry.EpisodeSources
+                .Select(group => new SeriesEpisodeSourceGroup
+                {
+                    SeasonNumber = group.SeasonNumber,
+                    EpisodeNumber = group.EpisodeNumber,
+                    Title = group.Title,
+                    Sources = group.Sources
+                        .OrderByDescending(source => string.Equals(source.PeerName, entry.PeerName, StringComparison.OrdinalIgnoreCase))
+                        .ThenByDescending(SourcePixelCount)
+                        .ThenBy(source => source.PeerName, StringComparer.OrdinalIgnoreCase)
+                        .ToList()
+                })
+                .OrderBy(group => group.SeasonNumber)
+                .ThenBy(group => group.EpisodeNumber)
                 .ToList()
         };
 

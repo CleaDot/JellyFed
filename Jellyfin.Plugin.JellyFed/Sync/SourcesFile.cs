@@ -31,4 +31,7 @@ public class SourcesFile
 
     /// <summary>Gets or sets all currently known sources for the logical item.</summary>
     public IReadOnlyList<ManifestSource> Sources { get; set; } = [];
+
+    /// <summary>Gets or sets all currently known per-episode sources for a series item.</summary>
+    public IReadOnlyList<SeriesEpisodeSourceGroup> EpisodeSources { get; set; } = [];
 }
