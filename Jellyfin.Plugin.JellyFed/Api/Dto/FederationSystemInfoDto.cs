@@ -26,12 +26,6 @@ public class FederationSystemInfoDto
     /// <summary>Gets or sets the current persisted schema version.</summary>
     public int? SchemaVersion { get; set; }
 
-    /// <summary>Gets or sets the preferred route prefix clients should use.</summary>
-    public string PreferredRoutePrefix { get; set; } = FederationProtocol.V1RoutePrefixPath;
-
-    /// <summary>Gets or sets all supported route prefixes, ordered by preference.</summary>
-    public IReadOnlyList<string> RoutePrefixes { get; set; } = FederationProtocol.SupportedRoutePrefixes;
-
     /// <summary>Gets or sets the capability flags exposed by this instance.</summary>
     public IReadOnlyList<string> Capabilities { get; set; } = FederationProtocol.Capabilities;
 }

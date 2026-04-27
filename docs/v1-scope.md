@@ -6,8 +6,8 @@ La **v1.0.0** marque le gel de l'architecture du plugin. Au-delà de cette versi
 
 - Les mises à jour sont installables sans reset ni reconfiguration.
 - Les peers configurés, tokens, bibliothèques synchronisées et manifests restent valides.
-- Les formats de fichiers (`.strm`, `.nfo`, `manifest.json`), le schéma de config et les routes API évoluent uniquement via des migrations rétrocompatibles.
-- Les features ajoutées (post-v1) sont **additives** : nouveaux endpoints, nouveaux champs optionnels avec défauts, nouvelles pages UI — jamais de changement rompant.
+- Les formats de fichiers (`.strm`, `.nfo`, `manifest.json`) et le schéma de config doivent rester migrables.
+- Tant que la v1 n'est pas figée, on s'autorise des breaking changes HTTP si ça simplifie proprement le contrat inter-peers.
 
 Cette contrainte détermine quelles features **doivent** être implémentées avant v1 (celles qui modifient fortement le fonctionnement du plugin) et quelles features peuvent arriver après sans friction.
 
@@ -27,7 +27,7 @@ Le slice logs/audit v1 ajoute aussi un contrat d'observabilité : store SQLite l
 | Schema `.jellyfed-manifest.json` | JSON local au plugin | Perte de l'historique, pruning cassé |
 | Schema `.jellyfed-audit.sqlite3` | SQLite locale au plugin | Perte d'observabilité, migration audit requise |
 | Schema `PluginConfiguration` | XML interne Jellyfin | Reconfiguration manuelle des peers |
-| Routes API `/JellyFed/v1/...` | HTTP inter-peers | Peers anciennes versions déconnectés |
+| Routes API `/JellyFed/...` | HTTP inter-peers | Peers anciennes versions déconnectés |
 | DTOs catalogue (`CatalogItemDto`, `EpisodeDto`, `MediaStreamInfoDto`) | JSON wire format | Sync cross-version rompue |
 
 ---
@@ -48,23 +48,23 @@ Mettre en place un `SchemaMigrator` capable de lire des schemas antérieurs et d
 
 **Contrat posé :** chaque document stocké par le plugin porte un numéro de version. Toute version du plugin sait lire les versions antérieures (ou refuse de démarrer avec un message clair si la version est trop récente).
 
-### 2. Versioning de l'API (v0.1.0.16)
+### 2. Contrat d'API unifié + signal de version (v0.1.0.16)
 
-Préfixer toutes les routes du `FederationController` par `/JellyFed/v1/` :
-- `/JellyFed/v1/catalog`
-- `/JellyFed/v1/stream/{id}`
-- `/JellyFed/v1/image/{id}/{type}`
-- `/JellyFed/v1/series/{id}/seasons`
-- `/JellyFed/v1/peer/register`
-- `/JellyFed/v1/system/info`
-- `/JellyFed/v1/manifest/stats`
+Conserver toutes les routes du `FederationController` sous un préfixe unique `/JellyFed/` :
+- `/JellyFed/catalog`
+- `/JellyFed/stream/{id}`
+- `/JellyFed/image/{id}/{type}`
+- `/JellyFed/series/{id}/seasons`
+- `/JellyFed/peer/register`
+- `/JellyFed/system/info`
+- `/JellyFed/manifest/stats`
 - etc.
 
-Les routes `/JellyFed/...` (sans préfixe de version) restent alias vers `/JellyFed/v1/...` pendant la transition pour ne pas casser les peers déjà déployés.
+Ajouter un endpoint explicite `GET /JellyFed/version` pour exposer la version locale courante, et faire remonter la version de chaque peer dans `GET /JellyFed/peers/details` afin d'afficher un warning si un peer diverge. Ce warning reste purement informatif : il ne bloque aucune feature.
 
-Le `PeerClient` négocie la version lors du premier contact via `GET /JellyFed/v1/system/info` (avec fallback legacy). Permet d'introduire plus tard un `/JellyFed/v2/` avec breaking changes, sans casser les peers v1.
+Pas d'alias legacy, pas de multi-prefixes, pas de négociation de routes pour l'instant.
 
-**Contrat posé :** les chemins HTTP `/JellyFed/v1/*` sont stables pour la durée de vie de v1.x. Les breaking changes vont dans `/v2/`.
+**Contrat posé :** tant que la v1 n'est pas figée, JellyFed garde une seule surface HTTP `/JellyFed/*` et un signal de version séparé.
 
 ### 3. Layout bibliothèque per-peer — déjà implémenté, à figer proprement (v0.1.0.17)
 
@@ -83,7 +83,7 @@ Le sujet n'est donc plus « faut-il unified ou per-peer ? », mais :
 
 Pourquoi avant v1 : le layout sur disque est déjà visible par l'utilisateur et piloté par la config. Sans migration/versioning explicite, l'upgrade depuis les builds antérieurs restera fragile.
 
-**Contrat posé :** le layout v1 est per-peer. Les futures évolutions doivent être rétrocompatibles ou accompagnées d'une migration versionnée.
+**Contrat posé :** le layout v1 est per-peer. Les futures évolutions doivent rester migrables proprement.
 
 ### 4. Multi-source / `IMediaSourceProvider` (v0.1.0.18)
 
@@ -136,7 +136,7 @@ Pourquoi avant v1 : c'est un bug fonctionnel majeur pour tout utilisateur avec d
 ```
 v0.1.0.15  Release de réconciliation temp -> main (UI peers + layout per-peer + anime roots)
 v0.1.0.16  Versioning config + manifest (schemaVersion, SchemaMigrator)
-v0.1.0.17  Versioning API (/JellyFed/v1/ + alias transitoires)
+v0.1.0.17  Versioning API (/JellyFed/ + alias transitoires)
 v0.1.0.18  Migration legacy layout -> layout per-peer figé
 v0.1.0.19  Multi-source player-integrated (sources.json + IMediaSourceProvider + episodeSources)
 v0.1.0.20  Fix SRT soft-sub
@@ -164,9 +164,9 @@ Ces features n'affectent aucun contrat public et peuvent être ajoutées en v1.x
 | Distribution publique | v1.0+ | Packaging du repo manifest.json, pas d'impact code |
 
 Toute feature future qui voudrait modifier un contrat public suivra le pattern :
-1. Ajout d'un champ optionnel avec défaut rétrocompatible.
-2. Bump `schemaVersion` dans le document concerné, migration écrite dans `SchemaMigrator`.
-3. Si breaking inévitable : nouveau préfixe d'API `/JellyFed/v2/`, coexistence avec v1.
+1. Ajout d'un champ optionnel si ça reste simple.
+2. Bump `schemaVersion` dans le document concerné, migration écrite dans `SchemaMigrator` quand il s'agit du disque/config.
+3. Si le contrat HTTP est encore bancal : on le casse maintenant et on simplifie, au lieu d'empiler de la compat prématurée.
 
 ---
 
@@ -175,7 +175,7 @@ Toute feature future qui voudrait modifier un contrat public suivra le pattern :
 ### Checklist de sortie v1
 
 - [x] Versioning config + manifest (`schemaVersion`, `SchemaMigrator`)
-- [x] API versionnée `/JellyFed/v1/` + alias legacy transitoires
+- [x] API unifiée `/JellyFed/` + endpoint explicite de version
 - [x] Layout bibliothèque per-peer figé et documenté
 - [x] Discovery/admin-control v1 (manual add only)
 - [x] Audit logs persistants + endpoints admin-only
@@ -190,6 +190,6 @@ Avant de tagger la v1.0.0 :
 
 1. Tous les tests TEST-01 à TEST-19 passent (cf. `roadmap.md`).
 2. Tests de migration : installer v0.1.0.14 → upgrade vers v1.0.0 → vérifier que peers, tokens, manifest et `.strm` sont tous intacts et fonctionnels.
-3. Tests cross-version : un peer en v0.1.0.14 doit continuer à sync avec un peer en v1.0.0 (via les alias `/JellyFed/...` → `/JellyFed/v1/...`).
+3. Tests de mismatch de version : un peer sur une autre version doit remonter un warning visible dans l'UI, sans bloquer la sync ni les features.
 4. Documentation figée : `architecture.md`, `api.md`, `strm.md` reflètent exactement l'état v1.
 5. Changelog complet dans `build.yaml`.

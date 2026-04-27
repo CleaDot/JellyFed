@@ -6,7 +6,7 @@ Un `.strm` est un fichier texte contenant une seule URL. Jellyfin le supporte na
 
 ```
 # Oppenheimer (2023).strm
-https://peer-b.example.com/JellyFed/v1/stream/abc123def456?token=fed_token_xyz
+https://peer-b.example.com/JellyFed/stream/abc123def456?token=fed_token_xyz
 ```
 
 Le token de fédération dans l'URL permet au serveur source d'authentifier la requête sans que la clé API Jellyfin n'apparaisse dans le fichier.
@@ -159,12 +159,12 @@ Depuis la slice v1 provenance/multi-source, JellyFed ajoute aussi :
 ```
 1. Client Jellyfin appelle /Items/{id}/PlaybackInfo sur le serveur LOCAL
 2. Serveur local retourne MediaSource avec :
-   - Path = "https://peer-b/JellyFed/v1/stream/abc123?token=..."
+   - Path = "https://peer-b/JellyFed/stream/abc123?token=..."
    - MediaStreams = [video:hevc, audio:eac3/eng, audio:aac/fre, sub:eng, sub:fre]
 3. Client vérifie les capacités du navigateur vs codec détecté
 4a. H264/AAC → direct-play possible → URL envoyée directement au browser
 4b. HEVC/MKV → transcoding HLS requis → serveur local lance FFmpeg
-5. FFmpeg lit depuis https://peer-b/JellyFed/v1/stream/abc123?token=...
+5. FFmpeg lit depuis https://peer-b/JellyFed/stream/abc123?token=...
    → peer-b sert le fichier brut avec range request support (seekable)
    → FFmpeg transcode en H264/AAC → HLS segments
 6. Browser joue les segments HLS depuis le serveur LOCAL
@@ -201,7 +201,7 @@ JellyFed télécharge posters et backdrops lors de la sync et les stocke localem
 
 L'URL source dépend de la config :
 - `JellyfinApiKey` configurée → `/Items/{id}/Images/{type}?api_key={key}` (qualité native)
-- Sinon → `/JellyFed/v1/image/{id}/{type}?token={fedToken}` (proxy, lit `ImageInfos`)
+- Sinon → `/JellyFed/image/{id}/{type}?token={fedToken}` (proxy, lit `ImageInfos`)
 
 ---
 
@@ -276,7 +276,7 @@ Pour une **série**, le même sidecar contient aussi un mapping par épisode :
         {
           "peerName": "instance-b",
           "jellyfinId": "ep001",
-          "streamUrl": "https://peer-b/JellyFed/v1/stream/ep001?token=...",
+          "streamUrl": "https://peer-b/JellyFed/stream/ep001?token=...",
           "videoCodec": "h264",
           "audioCodec": "aac",
           "width": 1280,
@@ -285,7 +285,7 @@ Pour une **série**, le même sidecar contient aussi un mapping par épisode :
         {
           "peerName": "instance-c",
           "jellyfinId": "epAAA",
-          "streamUrl": "https://peer-c/JellyFed/v1/stream/epAAA?token=...",
+          "streamUrl": "https://peer-c/JellyFed/stream/epAAA?token=...",
           "videoCodec": "hevc",
           "audioCodec": "eac3",
           "width": 1920,

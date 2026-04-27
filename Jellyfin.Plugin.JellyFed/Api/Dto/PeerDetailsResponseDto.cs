@@ -3,10 +3,13 @@ using System.Collections.Generic;
 namespace Jellyfin.Plugin.JellyFed.Api.Dto;
 
 /// <summary>
-/// Response envelope for GET /JellyFed/v1/peers/details.
+/// Response envelope for GET /JellyFed/peers/details.
 /// </summary>
 public class PeerDetailsResponseDto
 {
+    /// <summary>Gets or sets the current local JellyFed version.</summary>
+    public string? SelfVersion { get; set; }
+
     /// <summary>Gets the list of peers with full detail information.</summary>
     public IReadOnlyList<PeerDetailDto> Peers { get; init; } = [];
 

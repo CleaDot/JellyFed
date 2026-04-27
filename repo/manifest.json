@@ -7,15 +7,15 @@
     "overview": "Native federation between Jellyfin instances",
     "owner": "MaxBly",
     "targetAbi": "10.9.0.0",
-    "timestamp": "2026-04-25T17:14:57.0000000Z",
+    "timestamp": "2026-04-27T21:26:07.0000000Z",
     "versions": [
       {
         "version": "0.1.0.17",
-        "changelog": "[Main release] Integrate the v1 foundation, discovery/admin control, multi-source provenance, and audit logs on main, plus an admin source selector to promote the active upstream source for playback.",
+        "changelog": "[Main release] Integrate the v1 foundation, discovery/admin control, audit logs, multi-source provenance, native player-side source selection for movies and series episodes via IMediaSourceProvider, and a unified /JellyFed API with explicit version reporting plus non-blocking peer mismatch warnings.",
         "targetAbi": "10.11.0.0",
         "sourceUrl": "https://jellyfed.bly-net.com/repo/jellyfed_0.1.0.17.zip",
-        "checksum": "0dd4a5a8051dc7726718e87ed0799771",
-        "timestamp": "2026-04-25T17:14:57.0000000Z"
+        "checksum": "2a522bec96dc034f42639bd512f0de51",
+        "timestamp": "2026-04-27T21:26:07.0000000Z"
       },
       {
         "version": "0.1.0.15",

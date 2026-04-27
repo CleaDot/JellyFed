@@ -36,6 +36,9 @@ public class PeerDetailDto
     /// <summary>Gets or sets the JellyFed version reported by the peer.</summary>
     public string? Version { get; set; }
 
+    /// <summary>Gets or sets a value indicating whether the peer's version differs from the local instance.</summary>
+    public bool VersionMismatch { get; set; }
+
     /// <summary>Gets or sets the ISO 8601 timestamp of the last sync attempt, or null.</summary>
     public string? LastSyncAt { get; set; }
 

@@ -1,7 +1,7 @@
 # JellyFed — API de fédération
 
-Le préfixe **canonique** est `/JellyFed/v1/`.
-Les anciennes routes `/JellyFed/...` restent exposées comme alias rétrocompatibles pour les peers plus anciens.
+Le préfixe **canonique** est `/JellyFed/`.
+Pas d'alias legacy ni de compatibilité multi-routes pour l'instant : on assume les breaking changes tant que la v1 n'est pas figée.
 
 **Authentification :** header `Authorization: Bearer <token>` sur les routes protégées.
 Le token est soit l'`AccessToken` per-peer (si un échange explicite a eu lieu), soit le `FederationToken` global (bootstrap / setup manuel).
@@ -10,7 +10,7 @@ Le token est soit l'`AccessToken` per-peer (si un échange explicite a eu lieu),
 
 ## Endpoints publics (sans authentification)
 
-### `GET /JellyFed/v1/health`
+### `GET /JellyFed/health`
 
 Heartbeat. Utilisé par `PeerHeartbeatService` toutes les 5 minutes.
 
@@ -21,7 +21,24 @@ Heartbeat. Utilisé par `PeerHeartbeatService` toutes les 5 minutes.
 
 ---
 
-### `GET /JellyFed/v1/system/info`
+### `GET /JellyFed/version`
+
+Retourne la version locale courante, la version de protocole, la version de schéma persisté et l'identité de l'instance.
+
+**Réponse 200 :**
+```json
+{
+  "version": "0.1.0",
+  "protocolVersion": 1,
+  "schemaVersion": 1,
+  "instanceId": "4f3d6a9e4d9b4d9ebaf17d6f7f6fbb8a",
+  "serverName": "instance-a"
+}
+```
+
+---
+
+### `GET /JellyFed/system/info`
 
 Endpoint de handshake / découverte de capacités. Utilisé pour exposer la version JellyFed,
 la version de protocole, la version de schéma persisté et l'`instanceId` stable de l'instance.
@@ -35,12 +52,7 @@ la version de protocole, la version de schéma persisté et l'`instanceId` stabl
   "serverName": "instance-a",
   "protocolVersion": 1,
   "schemaVersion": 1,
-  "preferredRoutePrefix": "/JellyFed/v1",
-  "routePrefixes": ["/JellyFed/v1", "/JellyFed"],
   "capabilities": [
-    "schema-versioning",
-    "versioned-routes",
-    "legacy-route-aliases",
     "stable-instance-id",
     "per-peer-access-tokens",
     "per-peer-roots",
@@ -53,9 +65,7 @@ la version de protocole, la version de schéma persisté et l'`instanceId` stabl
 
 ---
 
-### `GET /JellyFed/v1/stream/{itemId}?token={token}`
-
-Alias legacy conservé : `GET /JellyFed/stream/{itemId}?token={token}`
+### `GET /JellyFed/stream/{itemId}?token={token}`
 
 Sert ou redirige le flux vidéo d'un item. Utilisé par les fichiers `.strm` — les players ne peuvent pas envoyer de headers d'auth, d'où le token en query param.
 
@@ -74,9 +84,7 @@ Sert ou redirige le flux vidéo d'un item. Utilisé par les fichiers `.strm` —
 
 ---
 
-### `GET /JellyFed/v1/image/{itemId}/{imageType}?token={token}`
-
-Alias legacy conservé : `GET /JellyFed/image/{itemId}/{imageType}?token={token}`
+### `GET /JellyFed/image/{itemId}/{imageType}?token={token}`
 
 Sert une image d'item (poster ou backdrop). Utilisé quand `JellyfinApiKey` n'est pas configurée.
 
@@ -149,11 +157,9 @@ Retourne le feed paginé des événements persistés.
 
 ---
 
-### `POST /JellyFed/v1/peer/register`
+### `POST /JellyFed/peer/register`
 
-Alias legacy conservé : `POST /JellyFed/peer/register`
-
-Handshake hérité pour échange optionnel d'un `AccessToken` per-peer.
+Handshake pour échange optionnel d'un `AccessToken` per-peer.
 En v1, **cet endpoint ne crée plus de peer automatiquement** : un admin doit toujours ajouter le peer manuellement côté UI.
 
 **Body :**
@@ -178,12 +184,12 @@ En v1, **cet endpoint ne crée plus de peer automatiquement** : un admin doit to
 
 Ces routes sont réservées à un utilisateur Jellyfin authentifié **administrateur**.
 
-### `GET /JellyFed/v1/admin/sources?search=...&limit=100`
+### `GET /JellyFed/admin/sources?search=...&limit=100`
 
 Retourne les items fédérés qui ont actuellement plusieurs sources amont connues.
 Le résultat expose l'item logique, la source primaire actuelle et les peers candidats.
 
-### `POST /JellyFed/v1/admin/sources/select`
+### `POST /JellyFed/admin/sources/select`
 
 Promeut une source donnée comme source primaire locale, réécrit les `.strm`/provenance associés,
 et déclenche un refresh de librairie.
@@ -201,7 +207,7 @@ et déclenche un refresh de librairie.
 
 ## Endpoints protégés (Bearer requis)
 
-### `GET /JellyFed/v1/catalog`
+### `GET /JellyFed/catalog`
 
 Catalogue de cette instance (films + séries de la bibliothèque locale). Les `.strm` de la jellyfed-library sont exclus.
 
@@ -232,7 +238,7 @@ Catalogue de cette instance (films + séries de la bibliothèque locale). Les `.
       "voteAverage": 8.1,
       "posterUrl": "https://peer-b/Items/abc123/Images/Primary?api_key=KEY",
       "backdropUrl": "https://peer-b/Items/abc123/Images/Backdrop?api_key=KEY",
-      "streamUrl": "https://peer-b/JellyFed/v1/stream/abc123?token=FED_TOKEN",
+      "streamUrl": "https://peer-b/JellyFed/stream/abc123?token=FED_TOKEN",
       "addedAt": "2026-01-15T10:30:00Z",
       "updatedAt": "2026-01-15T10:30:00Z",
       "container": "mkv",
@@ -255,7 +261,7 @@ Pour les séries, `streamUrl`, `container`, `videoCodec`, `width`, `height`, `au
 
 ---
 
-### `GET /JellyFed/v1/catalog/series/{seriesId}/seasons`
+### `GET /JellyFed/catalog/series/{seriesId}/seasons`
 
 Saisons et épisodes d'une série. Codec info incluse par épisode.
 
@@ -277,7 +283,7 @@ Saisons et épisodes d'une série. Codec info incluse par épisode.
           "airDate": "2008-01-20",
           "runtimeMinutes": 47,
           "stillUrl": "https://peer-b/Items/ep001/Images/Primary?api_key=KEY",
-          "streamUrl": "https://peer-b/JellyFed/v1/stream/ep001?token=FED_TOKEN",
+          "streamUrl": "https://peer-b/JellyFed/stream/ep001?token=FED_TOKEN",
           "container": "mkv",
           "videoCodec": "h264",
           "width": 1920,
@@ -298,7 +304,7 @@ Saisons et épisodes d'une série. Codec info incluse par épisode.
 
 ---
 
-### `GET /JellyFed/v1/peers`
+### `GET /JellyFed/peers`
 
 Peers configurés avec statut online/offline.
 
@@ -323,14 +329,13 @@ Peers configurés avec statut online/offline.
 
 ---
 
-### `GET /JellyFed/v1/discovery`
+### `GET /JellyFed/discovery`
 
 Annonce de discovery visible uniquement par les **direct peers** authentifiés.
 
 - `self` décrit cette instance (`discoverable=true|false`)
 - `directPeers` contient **uniquement** les peers directs discoverable connus, jamais les peers déjà découverts
 - profondeur conceptuelle limitée à deux sauts : pas de mesh/gossip récursif
-- alias legacy conservé pendant la transition : `GET /JellyFed/discovery`
 
 **Réponse 200 :**
 ```json
@@ -356,18 +361,20 @@ Annonce de discovery visible uniquement par les **direct peers** authentifiés.
 
 ---
 
-### `GET /JellyFed/v1/peers/details`
+### `GET /JellyFed/peers/details`
 
 Payload complet pour l'onglet admin **Peers**.
 
+- `selfVersion` = version JellyFed locale courante
 - `peers` = peers directs configurés
 - `discoveredPeers` = suggestions admin-visibles (jamais synchronisées tant qu'elles ne sont pas ajoutées)
 - `selfDiscoverable` = état du toggle local discoverable / invisible
-- alias legacy conservé pendant la transition : `GET /JellyFed/peers/details`
+- `peers[].versionMismatch` = warning non bloquant quand la version du peer diffère de l'instance locale
 
 **Réponse 200 (extrait) :**
 ```json
 {
+  "selfVersion": "0.1.0",
   "selfDiscoverable": true,
   "lastGlobalSyncAt": "2026-04-15T20:00:00Z",
   "peers": [
@@ -379,6 +386,8 @@ Payload complet pour l'onglet admin **Peers**.
       "syncSeries": true,
       "syncAnime": true,
       "online": true,
+      "version": "0.1.0",
+      "versionMismatch": false,
       "lastSyncStatus": "ok"
     }
   ],
@@ -397,7 +406,7 @@ Payload complet pour l'onglet admin **Peers**.
 
 ---
 
-### `POST /JellyFed/v1/peer/sync`
+### `POST /JellyFed/peer/sync`
 
 Déclenche une sync manuelle (queue `FederationSyncTask`).
 
@@ -407,7 +416,7 @@ Déclenche une sync manuelle (queue `FederationSyncTask`).
 
 ---
 
-### `GET /JellyFed/v1/manifest/stats`
+### `GET /JellyFed/manifest/stats`
 
 Stats du manifest par peer (items synced).
 
@@ -422,7 +431,7 @@ Stats du manifest par peer (items synced).
 
 ---
 
-### `POST /JellyFed/v1/peer/purge`
+### `POST /JellyFed/peer/purge`
 
 Supprime tous les `.strm` d'un peer du manifest et du filesystem.
 
@@ -432,7 +441,7 @@ Supprime tous les `.strm` d'un peer du manifest et du filesystem.
 
 ---
 
-### `GET /JellyFed/v1/peers/details`
+### `GET /JellyFed/peers/details`
 
 Vue riche utilisée par l'onglet **Peers** de la page admin : agrège configuration, heartbeat, dernière sync et compteurs locaux (films / séries / anime + taille disque) calculés depuis le manifest et le filesystem.
 
@@ -462,9 +471,9 @@ Vue riche utilisée par l'onglet **Peers** de la page admin : agrège configurat
 
 ---
 
-### `POST /JellyFed/v1/peers`
+### `POST /JellyFed/peers`
 
-Ajoute un peer depuis la modal *Add peer* du panneau admin. Fait un handshake `/JellyFed/v1/system/info` (avec fallback legacy `/JellyFed/system/info` puis `/JellyFed/health`) sur l'URL fournie avant de persister ; le peer est stocké même si unreachable (admin peut configurer en avance). L'URL est retirée automatiquement de `BlockedPeerUrls`.
+Ajoute un peer depuis la modal *Add peer* du panneau admin. Fait un handshake `/JellyFed/system/info` sur l'URL fournie avant de persister ; le peer est stocké même si unreachable (admin peut configurer en avance). L'URL est retirée automatiquement de `BlockedPeerUrls`.
 
 **Body :** `AddPeerRequestDto` — `Name`, `Url`, `FederationToken`, `Enabled`, `SyncMovies`, `SyncSeries`, `SyncAnime`.
 
@@ -474,7 +483,7 @@ Ajoute un peer depuis la modal *Add peer* du panneau admin. Fait un handshake `/
 
 ---
 
-### `POST /JellyFed/v1/peers/test`
+### `POST /JellyFed/peers/test`
 
 Teste la joignabilité d'un peer candidat **sans rien modifier** à la configuration. Utilisé par le bouton *Test connection* de la modal *Add peer* pour valider URL + token avant de confirmer l'ajout.
 
@@ -494,7 +503,7 @@ Teste la joignabilité d'un peer candidat **sans rien modifier** à la configura
 
 ---
 
-### `POST /JellyFed/v1/peer/{name}/sync`
+### `POST /JellyFed/peer/{name}/sync`
 
 Sync inline pour un seul peer. Exécute `FederationSyncTask.SyncPeerAsync(peer, ct)` — même pipeline que la tâche planifiée, scoped à ce peer (pruning limité à ses entrées manifest).
 
@@ -504,7 +513,7 @@ Sync inline pour un seul peer. Exécute `FederationSyncTask.SyncPeerAsync(peer, 
 
 ---
 
-### `POST /JellyFed/v1/peer/{name}/purge`
+### `POST /JellyFed/peer/{name}/purge`
 
 Équivalent de `/peer/purge` en REST path-based. Supprime `.strm` + entrées manifest + dossiers per-peer, reset les compteurs `PeerStatus` (status → `never`). La config du peer est conservée.
 
@@ -512,7 +521,7 @@ Sync inline pour un seul peer. Exécute `FederationSyncTask.SyncPeerAsync(peer, 
 
 ---
 
-### `POST /JellyFed/v1/peer/{name}/remove`
+### `POST /JellyFed/peer/{name}/remove`
 
 Retire définitivement un peer : purge des `.strm`, révocation de `AccessToken` (les prochaines requêtes du peer retournent 401), ajout de son URL dans `BlockedPeerUrls` pour la masquer des suggestions de discovery, et retrait de `config.Peers`.
 
@@ -520,7 +529,7 @@ Retire définitivement un peer : purge des `.strm`, révocation de `AccessToken`
 
 ---
 
-### `PATCH /JellyFed/v1/peer/{name}`
+### `PATCH /JellyFed/peer/{name}`
 
 Update partiel d'un peer depuis l'UI. Seuls les champs non-null sont appliqués.
 
@@ -537,7 +546,7 @@ Update partiel d'un peer depuis l'UI. Seuls les champs non-null sont appliqués.
 
 ---
 
-### `POST /JellyFed/v1/network/reset`
+### `POST /JellyFed/network/reset`
 
 Reset total : nouveau token de fédération, suppression de tous les peers et `.strm`.
 Les peers ayant l'ancien token recevront `401` lors de leur prochain accès.
@@ -548,7 +557,7 @@ Les peers ayant l'ancien token recevront `401` lors de leur prochain accès.
 
 ## Notes d'implémentation
 
-**URLs d'images :** si `JellyfinApiKey` est configurée sur l'instance source, le catalogue retourne des URLs directes vers l'API Jellyfin (`/Items/{id}/Images/...?api_key=KEY`). Sinon, il retourne des URLs vers le proxy JellyFed (`/JellyFed/v1/image/{id}/{type}?token=...`). Dans les deux cas, l'artwork est aussi téléchargé localement lors de la sync (`poster.jpg`, `fanart.jpg`).
+**URLs d'images :** si `JellyfinApiKey` est configurée sur l'instance source, le catalogue retourne des URLs directes vers l'API Jellyfin (`/Items/{id}/Images/...?api_key=KEY`). Sinon, il retourne des URLs vers le proxy JellyFed (`/JellyFed/image/{id}/{type}?token=...`). Dans les deux cas, l'artwork est aussi téléchargé localement lors de la sync (`poster.jpg`, `fanart.jpg`).
 
 **Delta sync :** le champ `since` permet de ne synchroniser que les nouveautés. Non encore exploité dans `FederationSyncTask` (toujours sync complète avec déduplication via manifest).
 

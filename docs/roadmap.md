@@ -22,7 +22,7 @@
 | 4f — Discovery/admin-control v1 (manual add only) | ✅ | 0.1.0.16 |
 | 4g — Audit logs persistants + endpoints admin-only + attribution peer access | ✅ | 0.1.0.16 |
 | 5a — Versioning config + manifest | ✅ | 0.1.0.16 |
-| 5b — Versioning API `/JellyFed/v1/` | ✅ | 0.1.0.16 |
+| 5b — Contrat d'API unifié `/JellyFed/` + signal de version | ✅ | 0.1.0.16 |
 | 5c — Migration legacy layout + gel du contrat disque | ✅ | 0.1.0.16 |
 | 5d — Multi-source provenance + player source selection (`sources[]` + `sources.json` + `IMediaSourceProvider`) | ✅ | feature/v1-sources |
 | 5e — Tags de provenance NFO (`<studio>` / `<tag>`) | ✅ | feature/v1-sources |
@@ -44,7 +44,7 @@ Le plan détaillé de la v1 (contrats à figer, motivations, critères de valida
 
 ```
 P1  Versioning config + manifest (v0.1.0.16)          — prérequis migrations
-P2  Versioning API /JellyFed/v1/ (v0.1.0.17)             — prérequis coexistence v1/v2
+P2  Contrat d'API unifié /JellyFed/ + signal de version — garder une seule surface HTTP tant que la v1 n'est pas figée
 P3  Migration legacy layout + gel du layout par peer  — sécuriser l'upgrade depuis l'ancien layout plat
 P4  Multi-source + player source selection             — manifest logique, sources.json, IMediaSourceProvider
 P5  Fix SRT BUG-05                                     — dernière grosse dette fonctionnelle lecture
@@ -128,7 +128,7 @@ Post-v1 (non-breaking, safe à ajouter en v1.x) : UI refonte, discovery plus ric
 
 #### TEST-02 — Accès au catalogue révoqué après suppression peer
 **À vérifier :**
-- Après que A supprime B, appeler `GET /JellyFed/v1/catalog` sur A avec l'ancien token de B
+- Après que A supprime B, appeler `GET /JellyFed/catalog` sur A avec l'ancien token de B
 - **Critère de succès :** `401 Unauthorized`
 
 #### TEST-03 — Discovery admin contrôlée (manual add only)
@@ -143,7 +143,7 @@ Post-v1 (non-breaking, safe à ajouter en v1.x) : UI refonte, discovery plus ric
 ### Images & URLs
 
 #### TEST-17 — Images via proxy JellyFed (sans JellyfinApiKey)
-**Contexte :** `JellyfinApiKey` non configurée → URLs `/JellyFed/v1/image/{id}/{type}?token=...`
+**Contexte :** `JellyfinApiKey` non configurée → URLs `/JellyFed/image/{id}/{type}?token=...`
 **À vérifier :**
 - Les posters s'affichent dans Jellyfin (en local depuis le disque — téléchargés à la sync)
 - Les backdrops s'affichent
@@ -160,7 +160,7 @@ Post-v1 (non-breaking, safe à ajouter en v1.x) : UI refonte, discovery plus ric
 **Contexte :** Jellyfin derrière un reverse proxy nginx avec TLS.
 **À vérifier :**
 - Les URLs générées dans le catalogue utilisent `https://` (pas `http://`)
-- Vérifier dans `GET /JellyFed/v1/catalog` que `streamUrl`, `posterUrl`, `backdropUrl` commencent par `https://`
+- Vérifier dans `GET /JellyFed/catalog` que `streamUrl`, `posterUrl`, `backdropUrl` commencent par `https://`
 - **Critère de succès :** toutes les URLs en `https://`
 
 ---
@@ -218,7 +218,7 @@ Post-v1 (non-breaking, safe à ajouter en v1.x) : UI refonte, discovery plus ric
 **Statut :** tranche v1 de base implémentée.
 
 **Disponible maintenant :**
-- `GET /JellyFed/v1/discovery` (alias legacy `GET /JellyFed/discovery`) pour partager l'instance courante + ses peers directs discoverable
+- `GET /JellyFed/discovery` pour partager l'instance courante + ses peers directs discoverable
 - `DiscoveredPeers` côté config/UI pour afficher des suggestions séparées des peers directs
 - `Discoverable` pour rendre une instance visible ou invisible aux peers de peers
 - ajout **manuel uniquement** depuis une suggestion
@@ -262,13 +262,13 @@ Post-v1 (non-breaking, safe à ajouter en v1.x) : UI refonte, discovery plus ric
 
 ### FEAT-05 — Suppression propagée
 **Contexte :** Si A supprime B, les `.strm` de B restent chez les peers de A.
-- Signal `POST /JellyFed/v1/peer/leave` envoyé à B quand A supprime B
+- Signal `POST /JellyFed/peer/leave` envoyé à B quand A supprime B
 - B supprime les `.strm` de A de sa bibliothèque
 
 ---
 
 ### FEAT-06 — Tag peer dans les items Jellyfin (partiellement implémenté)
-**Statut :** ✅ `GET /JellyFed/v1/manifest/stats` + `POST /JellyFed/v1/peer/purge` + section "Synced Catalogue" dans l'UI.
+**Statut :** ✅ `GET /JellyFed/manifest/stats` + `POST /JellyFed/peer/purge` + section "Synced Catalogue" dans l'UI.
 **Restant :** compléter le fix SRT/ASS soft-sub et, si nécessaire, enrichir encore les NFO / `MediaSourceInfo` pour le futur provider.
 
 ---
