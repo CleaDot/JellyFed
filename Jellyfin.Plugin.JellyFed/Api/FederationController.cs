@@ -29,8 +29,7 @@ namespace Jellyfin.Plugin.JellyFed.Api;
 /// JellyFed federation API endpoints.
 /// </summary>
 [ApiController]
-[Route(FederationProtocol.LegacyRoutePrefix)]
-[Route(FederationProtocol.V1RoutePrefix)]
+[Route(FederationProtocol.RoutePrefix)]
 [Produces(MediaTypeNames.Application.Json)]
 public class FederationController : ControllerBase
 {
@@ -88,9 +87,32 @@ public class FederationController : ControllerBase
     }
 
     /// <summary>
+    /// Returns the current local JellyFed version metadata.
+    /// </summary>
+    /// <returns>Version, protocol and schema information for this instance.</returns>
+    [HttpGet("version")]
+    [AllowAnonymous]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public ActionResult<object> GetVersion()
+    {
+        var config = Plugin.Instance?.Configuration;
+
+        return Ok(new
+        {
+            version = Plugin.Instance?.Version.ToString(3) ?? "unknown",
+            protocolVersion = FederationProtocol.CurrentProtocolVersion,
+            schemaVersion = config?.SchemaVersion ?? FederationProtocol.CurrentSchemaVersion,
+            instanceId = config?.InstanceId,
+            serverName = string.IsNullOrWhiteSpace(config?.SelfName)
+                ? Plugin.Instance?.Name ?? "JellyFed"
+                : config.SelfName
+        });
+    }
+
+    /// <summary>
     /// Returns handshake-oriented system information for federation peers.
     /// </summary>
-    /// <returns>Stable instance ID, schema/protocol versions, route prefixes and capabilities.</returns>
+    /// <returns>Stable instance ID, schema/protocol versions and capabilities.</returns>
     [HttpGet("system/info")]
     [AllowAnonymous]
     [ProducesResponseType(StatusCodes.Status200OK)]
@@ -109,8 +131,6 @@ public class FederationController : ControllerBase
             ServerName = serverName,
             ProtocolVersion = FederationProtocol.CurrentProtocolVersion,
             SchemaVersion = config?.SchemaVersion ?? FederationProtocol.CurrentSchemaVersion,
-            PreferredRoutePrefix = FederationProtocol.V1RoutePrefixPath,
-            RoutePrefixes = FederationProtocol.SupportedRoutePrefixes,
             Capabilities = FederationProtocol.Capabilities
         });
     }
@@ -161,7 +181,7 @@ public class FederationController : ControllerBase
         var page = items.Skip(offset).Take(limit).ToArray();
 
         _logger.LogInformation(
-            "GET /JellyFed/v1/catalog — {Total} items (type={Type}, since={Since})",
+            "GET /JellyFed/catalog — {Total} items (type={Type}, since={Since})",
             items.Count,
             type ?? "all",
             since ?? "all");
@@ -245,7 +265,7 @@ public class FederationController : ControllerBase
                     StillUrl = HasImage(ep, ImageType.Primary)
                         ? ImageUrl(baseUrl, ep.Id, "Primary", token, apiKey)
                         : null,
-                    StreamUrl = $"{baseUrl}{FederationProtocol.ToV1Path($"stream/{ep.Id:N}")}?token={token}",
+                    StreamUrl = $"{baseUrl}{FederationProtocol.ToPath($"stream/{ep.Id:N}")}?token={token}",
                     Container = epInfo.Container,
                     VideoCodec = epInfo.VideoCodec,
                     Width = epInfo.Width,
@@ -259,7 +279,7 @@ public class FederationController : ControllerBase
         }
 
         _logger.LogInformation(
-            "GET /JellyFed/v1/catalog/series/{SeriesId}/seasons — {SeasonCount} seasons",
+            "GET /JellyFed/catalog/series/{SeriesId}/seasons — {SeasonCount} seasons",
             seriesId,
             response.Seasons.Count);
 
@@ -336,7 +356,7 @@ public class FederationController : ControllerBase
                     ? ImageUrl(baseUrl, item.Id, "Backdrop", token, apiKey)
                     : null,
                 StreamUrl = kind == BaseItemKind.Movie
-                    ? $"{baseUrl}{FederationProtocol.ToV1Path($"stream/{item.Id:N}")}?token={token}"
+                    ? $"{baseUrl}{FederationProtocol.ToPath($"stream/{item.Id:N}")}?token={token}"
                     : null,
                 AddedAt = item.DateCreated.ToString("O", CultureInfo.InvariantCulture),
                 UpdatedAt = item.DateModified.ToString("O", CultureInfo.InvariantCulture),
@@ -903,6 +923,9 @@ public class FederationController : ControllerBase
                 latestSyncAt = status.LastSyncAt;
             }
 
+            var peerVersion = status?.Version;
+            var selfVersion = Plugin.Instance?.Version.ToString(3) ?? "unknown";
+
             peers.Add(new PeerDetailDto
             {
                 Name = peer.Name,
@@ -914,7 +937,9 @@ public class FederationController : ControllerBase
                 HasAccessToken = !string.IsNullOrEmpty(peer.AccessToken),
                 Online = status?.Online ?? false,
                 LastSeen = status?.LastSeen,
-                Version = status?.Version,
+                Version = peerVersion,
+                VersionMismatch = !string.IsNullOrWhiteSpace(peerVersion)
+                    && !string.Equals(peerVersion, selfVersion, StringComparison.Ordinal),
                 LastSyncAt = status?.LastSyncAt,
                 LastSyncStatus = status?.LastSyncStatus ?? "never",
                 LastSyncError = status?.LastSyncError,
@@ -940,6 +965,7 @@ public class FederationController : ControllerBase
 
         return Ok(new PeerDetailsResponseDto
         {
+            SelfVersion = Plugin.Instance?.Version.ToString(3) ?? "unknown",
             Peers = peers,
             DiscoveredPeers = config.DiscoveredPeers
                 .OrderBy(p => p.Name)
@@ -1981,7 +2007,7 @@ public class FederationController : ControllerBase
     private static string ImageUrl(string baseUrl, Guid itemId, string imageType, string token, string? apiKey)
         => !string.IsNullOrWhiteSpace(apiKey)
             ? $"{baseUrl}/Items/{itemId:N}/Images/{imageType}?api_key={apiKey}"
-            : $"{baseUrl}{FederationProtocol.ToV1Path($"image/{itemId:N}/{imageType}")}?token={token}";
+            : $"{baseUrl}{FederationProtocol.ToPath($"image/{itemId:N}/{imageType}")}?token={token}";
 
     private string GetEffectivePeerTokenOrGlobal()
     {

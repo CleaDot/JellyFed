@@ -15,4 +15,5 @@ artifacts:
 - "Jellyfin.Plugin.JellyFed.dll"
 changelog: >
   Integrate the v1 foundation, discovery/admin control, audit logs, multi-source provenance,
-  and native player-side source selection for movies and series episodes via IMediaSourceProvider.
+  native player-side source selection for movies and series episodes via IMediaSourceProvider,
+  and a unified /JellyFed API with explicit version reporting plus non-blocking peer mismatch warnings.

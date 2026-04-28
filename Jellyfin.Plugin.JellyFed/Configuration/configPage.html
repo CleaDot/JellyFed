@@ -474,6 +474,7 @@
                         online: pick(raw, 'online'),
                         lastSeen: pick(raw, 'lastSeen'),
                         version: pick(raw, 'version'),
+                        versionMismatch: !!pick(raw, 'versionMismatch'),
                         lastSyncAt: pick(raw, 'lastSyncAt'),
                         lastSyncStatus: pick(raw, 'lastSyncStatus') || 'never',
                         lastSyncError: pick(raw, 'lastSyncError'),
@@ -589,7 +590,7 @@
                             'Federation token not set. Finish Settings tab first.';
                         return;
                     }
-                    fetch(jellyFedUrl('/JellyFed/v1/peers/details'), {
+                    fetch(jellyFedUrl('/JellyFed/peers/details'), {
                         headers: authHeaders(false)
                     }).then(function (r) {
                         if (!r.ok) { throw new Error('HTTP ' + r.status); }
@@ -598,12 +599,13 @@
                         console.log('[JellyFed] peers/details raw response:', data);
                         var rawPeers = pick(data, 'peers') || [];
                         var rawDiscoveredPeers = pick(data, 'discoveredPeers') || [];
+                        var selfVersion = pick(data, 'selfVersion') || 'unknown';
                         var selfDiscoverable = !!pick(data, 'selfDiscoverable');
                         peerDetailsCache = rawPeers.map(normalizePeer);
                         var discoveredPeers = rawDiscoveredPeers.map(normalizeDiscoveredPeer);
                         var lastGlobal = pick(data, 'lastGlobalSyncAt');
                         console.log('[JellyFed] peers/details —', peerDetailsCache.length + ' peer(s); lastGlobalSyncAt=', lastGlobal);
-                        renderPeerDetails(page, peerDetailsCache, discoveredPeers, lastGlobal, selfDiscoverable);
+                        renderPeerDetails(page, peerDetailsCache, discoveredPeers, lastGlobal, selfDiscoverable, selfVersion);
                         loadBlocked(page);
                         loadMultiSourceItems(page);
                     }).catch(function (err) {
@@ -612,16 +614,20 @@
                     });
                 }
 
-                function renderPeerDetails(page, peers, discoveredPeers, lastGlobal, selfDiscoverable) {
+                function renderPeerDetails(page, peers, discoveredPeers, lastGlobal, selfDiscoverable, selfVersion) {
                     var header = page.querySelector('#peersHeaderStatus');
                     var count = (peers && peers.length) || 0;
                     var discoveredCount = (discoveredPeers && discoveredPeers.length) || 0;
+                    var mismatchCount = (peers || []).filter(function (peer) { return !!peer.versionMismatch; }).length;
                     var syncPart = lastGlobal
                         ? 'last sync ' + formatRelative(lastGlobal) + ' (' + new Date(lastGlobal).toLocaleString() + ')'
                         : 'no sync yet';
                     header.textContent = count + ' direct peer' + (count === 1 ? '' : 's') +
                         ' · ' + discoveredCount + ' discovered peer' + (discoveredCount === 1 ? '' : 's') +
                         ' · ' + syncPart;
+                    if (mismatchCount > 0) {
+                        header.textContent += ' · warning: ' + mismatchCount + ' peer version mismatch' + (mismatchCount === 1 ? '' : 'es') + ' (local v' + selfVersion + ')';
+                    }
 
                     page.querySelector('#discoverableState').textContent = selfDiscoverable
                         ? 'This instance is discoverable to second-hop admins.'
@@ -639,7 +645,7 @@
                     empty.style.display = 'none';
 
                     peers.forEach(function (peer) {
-                        container.appendChild(buildPeerCard(page, peer));
+                        container.appendChild(buildPeerCard(page, peer, selfVersion));
                     });
 
                     renderDiscoveredPeers(page, discoveredPeers || []);
@@ -688,7 +694,7 @@
                     return card;
                 }
 
-                function buildPeerCard(page, peer) {
+                function buildPeerCard(page, peer, selfVersion) {
                     var card = document.createElement('div');
                     card.className = 'jf-peer-card';
                     card.setAttribute('data-peer-name', peer.name);
@@ -696,12 +702,16 @@
                     var onlineClass = peer.online ? 'online' : 'offline';
                     var statusClass = peer.lastSyncStatus || 'never';
                     var versionLabel = peer.version ? 'v' + escHtml(peer.version) : 'version unknown';
+                    var versionWarning = peer.versionMismatch
+                        ? '<div class="jf-peer-error" style="color:#f0c674;">Version mismatch: local v' + escHtml(selfVersion || 'unknown') + ' · peer ' + escHtml(peer.version || 'unknown') + '.</div>'
+                        : '';
 
                     card.innerHTML =
                         '<div class="jf-peer-head">' +
                             '<span class="jf-dot ' + onlineClass + '" title="' + (peer.online ? 'Online' : 'Offline') + '"></span>' +
                             '<span class="jf-peer-name">' + escHtml(peer.name) + '</span>' +
                             '<span class="jf-badge">' + versionLabel + '</span>' +
+                            (peer.versionMismatch ? '<span class="jf-badge" style="border-color:#f0c674;color:#f0c674;">mismatch</span>' : '') +
                             (peer.online ? '' : '<span class="jf-badge" title="Last seen">offline</span>') +
                         '</div>' +
                         '<div class="jf-peer-url">' + escHtml(peer.url) + '</div>' +
@@ -714,6 +724,7 @@
                         (peer.lastSyncError
                             ? '<div class="jf-peer-error">' + escHtml(peer.lastSyncError) + '</div>'
                             : '') +
+                        versionWarning +
                         '<div class="jf-peer-counts">' +
                             'Peer: ' + (peer.peerMovieCount || 0) + 'M / ' + (peer.peerSeriesCount || 0) + 'S · ' +
                             'Local: ' + (peer.localMovieCount || 0) + 'M / ' + (peer.localSeriesCount || 0) + 'S / ' + (peer.localAnimeCount || 0) + 'A · ' +
@@ -774,7 +785,7 @@
                 }
 
                 function patchPeer(page, name, body) {
-                    return fetch(jellyFedUrl('/JellyFed/v1/peer/' + encodeURIComponent(name)), {
+                    return fetch(jellyFedUrl('/JellyFed/peer/' + encodeURIComponent(name)), {
                         method: 'PATCH',
                         headers: authHeaders(true),
                         body: JSON.stringify(body)
@@ -793,7 +804,7 @@
                 function resyncPeer(page, name, btn) {
                     btn.disabled = true;
                     btn.querySelector('span').textContent = 'Syncing…';
-                    fetch(jellyFedUrl('/JellyFed/v1/peer/' + encodeURIComponent(name) + '/sync'), {
+                    fetch(jellyFedUrl('/JellyFed/peer/' + encodeURIComponent(name) + '/sync'), {
                         method: 'POST',
                         headers: authHeaders(false)
                     }).then(function (r) {
@@ -821,7 +832,7 @@
                     }
                     btn.disabled = true;
                     btn.querySelector('span').textContent = 'Purging…';
-                    fetch(jellyFedUrl('/JellyFed/v1/peer/' + encodeURIComponent(name) + '/purge'), {
+                    fetch(jellyFedUrl('/JellyFed/peer/' + encodeURIComponent(name) + '/purge'), {
                         method: 'POST',
                         headers: authHeaders(false)
                     }).then(function (r) {
@@ -846,7 +857,7 @@
                     }
                     btn.disabled = true;
                     btn.querySelector('span').textContent = 'Removing…';
-                    fetch(jellyFedUrl('/JellyFed/v1/peer/' + encodeURIComponent(name) + '/remove'), {
+                    fetch(jellyFedUrl('/JellyFed/peer/' + encodeURIComponent(name) + '/remove'), {
                         method: 'POST',
                         headers: authHeaders(false)
                     }).then(function (r) {
@@ -934,7 +945,7 @@
                 function loadMultiSourceItems(page) {
                     var search = (page.querySelector('#sourceSearchInput').value || '').trim();
                     setSourcesStatus(page, 'Loading multi-source items…');
-                    return fetch(jellyFedUrl('/JellyFed/v1/admin/sources?limit=100' + (search ? '&search=' + encodeURIComponent(search) : '')), {
+                    return fetch(jellyFedUrl('/JellyFed/admin/sources?limit=100' + (search ? '&search=' + encodeURIComponent(search) : '')), {
                         method: 'GET',
                         headers: authHeaders(false)
                     }).then(function (r) {
@@ -1002,7 +1013,7 @@
                     var span = btn.querySelector('span');
                     var old = span.textContent;
                     span.textContent = 'Switching…';
-                    fetch(jellyFedUrl('/JellyFed/v1/admin/sources/select'), {
+                    fetch(jellyFedUrl('/JellyFed/admin/sources/select'), {
                         method: 'POST',
                         headers: authHeaders(true),
                         body: JSON.stringify({ ItemType: item.itemType, ItemKey: item.itemKey, PeerName: peerName })
@@ -1063,7 +1074,7 @@
                     status.textContent = 'Testing ' + url + ' …';
                     testBtn.disabled = true;
                     testBtn.querySelector('span').textContent = 'Testing…';
-                    fetch(jellyFedUrl('/JellyFed/v1/peers/test'), {
+                    fetch(jellyFedUrl('/JellyFed/peers/test'), {
                         method: 'POST',
                         headers: authHeaders(true),
                         body: JSON.stringify({ Url: url, FederationToken: token })
@@ -1099,7 +1110,7 @@
                     status.textContent = 'Adding peer…';
                     addBtn.disabled = true;
                     addBtn.querySelector('span').textContent = 'Adding…';
-                    fetch(jellyFedUrl('/JellyFed/v1/peers'), {
+                    fetch(jellyFedUrl('/JellyFed/peers'), {
                         method: 'POST',
                         headers: authHeaders(true),
                         body: JSON.stringify({
@@ -1392,7 +1403,7 @@
                         var payload = collectSettingsPayload(page, fresh);
                         return ApiClient.updatePluginConfiguration(pluginId, payload).then(function () {
                             config = payload;
-                            return fetch(jellyFedUrl('/JellyFed/v1/libraries/roots/ensure'), {
+                            return fetch(jellyFedUrl('/JellyFed/libraries/roots/ensure'), {
                                 method: 'POST',
                                 headers: authHeaders(true),
                                 body: JSON.stringify({})
@@ -1489,7 +1500,7 @@
                     var btn = page.querySelector('#syncAllBtn');
                     btn.disabled = true;
                     btn.querySelector('span').textContent = 'Queuing…';
-                    fetch(jellyFedUrl('/JellyFed/v1/peer/sync'), {
+                    fetch(jellyFedUrl('/JellyFed/peer/sync'), {
                         method: 'POST',
                         headers: authHeaders(true),
                         body: JSON.stringify({ peerName: null })
@@ -1577,7 +1588,7 @@
                     btn.disabled = true;
                     btn.querySelector('span').textContent = 'Resetting…';
 
-                    fetch(jellyFedUrl('/JellyFed/v1/network/reset'), {
+                    fetch(jellyFedUrl('/JellyFed/network/reset'), {
                         method: 'POST',
                         headers: authHeaders(true),
                         body: JSON.stringify({})

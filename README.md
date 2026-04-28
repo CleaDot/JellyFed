@@ -25,9 +25,9 @@ Instance A installe JellyFed. Elle se connecte à l'Instance B. Le plugin synchr
 ## Fonctionnalités
 
 ### Catalogue & streaming
-- Exposition du catalogue local via `GET /JellyFed/v1/catalog` (films + séries + codec info)
-- Proxy stream `/JellyFed/v1/stream/{id}?token=...` — aucune clé API dans les `.strm`
-- Proxy image `/JellyFed/v1/image/{id}/{type}?token=...` — fallback si pas de `JellyfinApiKey`
+- Exposition du catalogue local via `GET /JellyFed/catalog` (films + séries + codec info)
+- Proxy stream `/JellyFed/stream/{id}?token=...` — aucune clé API dans les `.strm`
+- Proxy image `/JellyFed/image/{id}/{type}?token=...` — fallback si pas de `JellyfinApiKey`
 - Infos codec + toutes les pistes audio/sous-titres exposées dans le catalogue
 - Sélecteur multi-source natif dans le player Jellyfin (films + épisodes de séries quand plusieurs peers exposent le même contenu)
 - Décision transcodage HLS correcte grâce aux infos `<fileinfo><streamdetails>` dans les NFO
@@ -44,7 +44,8 @@ Instance A installe JellyFed. Elle se connecte à l'Instance B. Le plugin synchr
 - Rescan Jellyfin déclenché après chaque sync
 
 ### Gestion des peers
-- Endpoint handshake `GET /JellyFed/v1/system/info` (version, protocolVersion, schemaVersion, instanceId, capabilities)
+- Endpoint handshake `GET /JellyFed/system/info` + endpoint `GET /JellyFed/version` pour exposer la version locale
+- L'onglet Peers remonte aussi la version de chaque peer et affiche un warning non bloquant si elle diffère de l'instance locale
 - Onglet dédié « Peers » dans la page de configuration (Readme / Settings / Peers / Danger Zone)
 - Séparation claire entre **direct peers** (configurés, synchronisables) et **discovered peers** (suggestions uniquement)
 - Cartes par peer avec statut online/offline, version, dernière sync (badge ok/failed/never + erreur), durée

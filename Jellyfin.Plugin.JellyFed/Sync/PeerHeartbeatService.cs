@@ -131,10 +131,9 @@ public class PeerHeartbeatService : IHostedService, IDisposable
                     }
 
                     _logger.LogDebug(
-                        "JellyFed heartbeat: {PeerName} online (v{Version}, route={Route}).",
+                        "JellyFed heartbeat: {PeerName} online (v{Version}).",
                         peer.Name,
-                        status.Version,
-                        info.PreferredRoutePrefix);
+                        status.Version);
 
                     if (!wasOnline || !string.Equals(previousVersion, status.Version, StringComparison.Ordinal))
                     {
@@ -142,7 +141,7 @@ public class PeerHeartbeatService : IHostedService, IDisposable
                             peer,
                             "peer.heartbeat.online",
                             $"Peer {peer.Name} is reachable.",
-                            details: new { version = status.Version, wasOnline, route = info.PreferredRoutePrefix, discoverable = status.Discoverable });
+                            details: new { version = status.Version, wasOnline, discoverable = status.Discoverable });
                     }
                 }
                 else

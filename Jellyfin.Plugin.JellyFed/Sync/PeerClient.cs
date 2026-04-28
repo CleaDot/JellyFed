@@ -54,14 +54,14 @@ public class PeerClient
             suffix += $"?since={Uri.EscapeDataString(since.Value.ToString("O"))}";
         }
 
-        var url = BuildUrl(peer.Url, FederationProtocol.ToV1Path(suffix));
+        var url = BuildUrl(peer.Url, FederationProtocol.ToPath(suffix));
 
         try
         {
-            var result = await GetJsonWithRouteFallbackAsync<CatalogResponseDto>(
+            var result = await GetJsonAsync<CatalogResponseDto>(
                 peer.Url,
                 peer.FederationToken,
-                suffix,
+                FederationProtocol.ToPath(suffix),
                 cancellationToken).ConfigureAwait(false);
 
             if (result is null)
@@ -102,14 +102,14 @@ public class PeerClient
         CancellationToken cancellationToken)
     {
         var suffix = $"/catalog/series/{seriesId}/seasons";
-        var url = BuildUrl(peer.Url, FederationProtocol.ToV1Path(suffix));
+        var url = BuildUrl(peer.Url, FederationProtocol.ToPath(suffix));
 
         try
         {
-            var result = await GetJsonWithRouteFallbackAsync<SeasonsResponseDto>(
+            var result = await GetJsonAsync<SeasonsResponseDto>(
                 peer.Url,
                 peer.FederationToken,
-                suffix,
+                FederationProtocol.ToPath(suffix),
                 cancellationToken).ConfigureAwait(false);
 
             if (result is null)
@@ -139,7 +139,6 @@ public class PeerClient
 
     /// <summary>
     /// Pings a peer and returns its JellyFed system information when reachable.
-    /// Falls back to the legacy unversioned health endpoint for older peers.
     /// </summary>
     /// <param name="url">Peer base URL.</param>
     /// <param name="federationToken">Federation token to present in the Bearer header.</param>
@@ -163,10 +162,7 @@ public class PeerClient
             var info = await GetJsonAsync<FederationSystemInfoDto>(
                 url,
                 federationToken,
-                [
-                    FederationProtocol.ToV1Path("system/info"),
-                    FederationProtocol.ToLegacyPath("system/info")
-                ],
+                FederationProtocol.ToPath("system/info"),
                 cts.Token).ConfigureAwait(false);
 
             if (info is not null)
@@ -175,25 +171,7 @@ public class PeerClient
                 return info;
             }
 
-            var health = await GetJsonAsync<HealthDto>(
-                url,
-                federationToken,
-                [FederationProtocol.ToLegacyPath("health")],
-                cts.Token).ConfigureAwait(false);
-
-            if (health is null)
-            {
-                return null;
-            }
-
-            return new FederationSystemInfoDto
-            {
-                Name = string.IsNullOrWhiteSpace(health.Name) ? "JellyFed" : health.Name,
-                Version = health.Version ?? string.Empty,
-                PreferredRoutePrefix = FederationProtocol.LegacyRoutePrefixPath,
-                RoutePrefixes = [FederationProtocol.LegacyRoutePrefixPath],
-                Capabilities = ["legacy-route-aliases"]
-            };
+            return null;
         }
 #pragma warning disable CA1031 // Handshake is best-effort; any failure is reported as unreachable.
         catch
@@ -231,7 +209,7 @@ public class PeerClient
         PeerConfiguration peer,
         CancellationToken cancellationToken)
     {
-        var url = BuildUrl(peer.Url, FederationProtocol.ToV1Path("/discovery"));
+        var url = BuildUrl(peer.Url, FederationProtocol.ToPath("/discovery"));
 
         try
         {
@@ -298,7 +276,7 @@ public class PeerClient
         CancellationToken cancellationToken)
     {
         PeerIdentity.EnsurePeerId(peer);
-        var url = BuildUrl(peer.Url, FederationProtocol.ToV1Path("/peer/register"));
+        var url = BuildUrl(peer.Url, FederationProtocol.ToPath("/peer/register"));
 
         try
         {
@@ -309,10 +287,10 @@ public class PeerClient
                 FederationToken = selfToken
             };
 
-            var result = await PostJsonWithRouteFallbackAsync<RegisterPeerResponseDto>(
+            var result = await PostJsonAsync<RegisterPeerResponseDto>(
                 peer.Url,
                 null,
-                "/peer/register",
+                FederationProtocol.ToPath("/peer/register"),
                 payload,
                 cancellationToken).ConfigureAwait(false);
 
@@ -370,101 +348,51 @@ public class PeerClient
         }
     }
 
-    private async Task<T?> GetJsonWithRouteFallbackAsync<T>(
-        string baseUrl,
-        string? bearerToken,
-        string suffix,
-        CancellationToken cancellationToken)
-    {
-        return await GetJsonAsync<T>(
-            baseUrl,
-            bearerToken,
-            [
-                FederationProtocol.ToV1Path(suffix),
-                FederationProtocol.ToLegacyPath(suffix)
-            ],
-            cancellationToken).ConfigureAwait(false);
-    }
-
     private async Task<T?> GetJsonAsync<T>(
         string baseUrl,
         string? bearerToken,
-        IReadOnlyList<string> candidatePaths,
+        string path,
         CancellationToken cancellationToken)
     {
-        for (var i = 0; i < candidatePaths.Count; i++)
+        using var request = new HttpRequestMessage(HttpMethod.Get, BuildUrl(baseUrl, path));
+        ApplyBearer(request, bearerToken);
+
+        using var response = await _http.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode)
         {
-            var path = candidatePaths[i];
-            using var request = new HttpRequestMessage(HttpMethod.Get, BuildUrl(baseUrl, path));
-            ApplyBearer(request, bearerToken);
-
-            using var response = await _http.SendAsync(request, cancellationToken).ConfigureAwait(false);
-            if (response.StatusCode == HttpStatusCode.NotFound && i < candidatePaths.Count - 1)
-            {
-                continue;
-            }
-
-            if (!response.IsSuccessStatusCode)
-            {
-                return default;
-            }
-
-            return await response.Content.ReadFromJsonAsync<T>(cancellationToken)
-                .ConfigureAwait(false);
+            return default;
         }
 
-        return default;
+        return await response.Content.ReadFromJsonAsync<T>(cancellationToken)
+            .ConfigureAwait(false);
     }
 
-    private async Task<TResponse?> PostJsonWithRouteFallbackAsync<TResponse>(
+    private async Task<TResponse?> PostJsonAsync<TResponse>(
         string baseUrl,
         string? bearerToken,
-        string suffix,
+        string path,
         object payload,
         CancellationToken cancellationToken)
     {
-        var candidatePaths = new[]
+        using var request = new HttpRequestMessage(HttpMethod.Post, BuildUrl(baseUrl, path))
         {
-            FederationProtocol.ToV1Path(suffix),
-            FederationProtocol.ToLegacyPath(suffix)
+            Content = JsonContent.Create(payload)
         };
+        ApplyBearer(request, bearerToken);
 
-        for (var i = 0; i < candidatePaths.Length; i++)
+        using var response = await _http.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode)
         {
-            var path = candidatePaths[i];
-            using var request = new HttpRequestMessage(HttpMethod.Post, BuildUrl(baseUrl, path))
-            {
-                Content = JsonContent.Create(payload)
-            };
-            ApplyBearer(request, bearerToken);
-
-            using var response = await _http.SendAsync(request, cancellationToken).ConfigureAwait(false);
-            if (response.StatusCode == HttpStatusCode.NotFound && i < candidatePaths.Length - 1)
-            {
-                continue;
-            }
-
-            if (!response.IsSuccessStatusCode)
-            {
-                return default;
-            }
-
-            return await response.Content.ReadFromJsonAsync<TResponse>(cancellationToken)
-                .ConfigureAwait(false);
+            return default;
         }
 
-        return default;
+        return await response.Content.ReadFromJsonAsync<TResponse>(cancellationToken)
+            .ConfigureAwait(false);
     }
 
     private static void NormalizeSystemInfo(FederationSystemInfoDto info)
     {
         info.Name = string.IsNullOrWhiteSpace(info.Name) ? "JellyFed" : info.Name;
-        info.PreferredRoutePrefix = string.IsNullOrWhiteSpace(info.PreferredRoutePrefix)
-            ? FederationProtocol.V1RoutePrefixPath
-            : info.PreferredRoutePrefix;
-        info.RoutePrefixes = info.RoutePrefixes is null || info.RoutePrefixes.Count == 0
-            ? [info.PreferredRoutePrefix]
-            : info.RoutePrefixes;
         info.Capabilities ??= [];
     }
 
@@ -478,11 +406,4 @@ public class PeerClient
 
     private static string BuildUrl(string baseUrl, string path)
         => baseUrl.TrimEnd('/') + path;
-
-    private sealed class HealthDto
-    {
-        public string? Name { get; set; }
-
-        public string? Version { get; set; }
-    }
 }
